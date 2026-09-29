@@ -26,6 +26,12 @@
             <Setter Property="Padding" Value="11,9" />
             <Setter Property="FontSize" Value="14" />
             <Setter Property="CaretBrush" Value="#69D8C2" />
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="#69D8C2" />
+                    <Setter Property="Background" Value="#0F1930" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <!-- Пункты выпадающих списков лежат на белом popup — текст чёрный -->
         <Style TargetType="ComboBoxItem">
@@ -87,6 +93,9 @@
                             <Trigger Property="IsDropDownOpen" Value="True">
                                 <Setter TargetName="Root" Property="BorderBrush" Value="#69D8C2" />
                             </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#69D8C2" />
+                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Root" Property="Opacity" Value="0.5" />
                                 <Setter Property="Foreground" Value="#65718A" />
@@ -132,6 +141,58 @@
             <Setter Property="CornerRadius" Value="14" />
             <Setter Property="Padding" Value="18,15" />
         </Style>
+        <!-- Тонкий тёмный скроллбар для левой панели (заменяет светлый системный) -->
+        <Style x:Key="SlimScrollBar" TargetType="ScrollBar">
+            <Setter Property="Width" Value="6" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False" />
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border x:Name="ThumbBg" Background="#2E3B57" CornerRadius="3" Margin="1,0" />
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBg" Property="Background" Value="#465878" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBg" Property="Background" Value="#69D8C2" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Скруглённый тонкий прогресс-бар -->
+        <Style x:Key="SlimProgress" TargetType="ProgressBar">
+            <Setter Property="Foreground" Value="#69D8C2" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid>
+                            <Border x:Name="PART_Track" Background="#1A2438" CornerRadius="2" />
+                            <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="28">
@@ -163,6 +224,9 @@
 
             <Border Grid.Column="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1" CornerRadius="18" Padding="20">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource SlimScrollBar}" />
+                    </ScrollViewer.Resources>
                     <StackPanel>
                         <TextBlock Text="Параметры запуска" FontSize="17" FontWeight="SemiBold" />
                         <TextBlock Text="Настройте алгоритм и размер серии" Foreground="#8995AD" FontSize="12" Margin="0,5,0,21" />
@@ -197,13 +261,89 @@
                         <Button x:Name="RunButton" Content="Построить график" Click="RunButton_Click" Height="46" Style="{StaticResource DarkButton}" Background="#69D8C2" Foreground="#071411" FontSize="14" FontWeight="Bold" />
                         <Button x:Name="CancelButton" Content="Остановить расчёт" Click="CancelButton_Click" Height="38" Margin="0,9,0,0" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" IsEnabled="False" />
 
-                        <ProgressBar x:Name="RunProgress" Height="4" Margin="0,17,0,8" Minimum="0" Maximum="100" Value="0" Foreground="#69D8C2" Background="#202B42" BorderThickness="0" />
+                        <Grid Margin="0,9,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="9" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                            <Button x:Name="SaveDbButton" Grid.Column="0" Content="Сохранить в БД" Click="SaveDbButton_Click" Height="36" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" IsEnabled="False" />
+                            <Button x:Name="LoadDbButton" Grid.Column="2" Content="Загрузить из БД" Click="LoadDbButton_Click" Height="36" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" />
+                        </Grid>
+
+                        <ProgressBar x:Name="RunProgress" Height="4" Margin="0,17,0,8" Minimum="0" Maximum="100" Value="0" Style="{StaticResource SlimProgress}" />
                         <TextBlock x:Name="StatusText" Text="Готов к запуску" Foreground="#8995AD" FontSize="11" />
 
                         <Border Background="#0C1323" BorderBrush="#202B42" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,23,0,0">
                             <StackPanel>
                                 <TextBlock Text="Как читать график" FontSize="12" FontWeight="SemiBold" />
                                 <TextBlock Text="Бирюзовая линия — результаты замеров. Коралловая — аппроксимация выбранного алгоритма." Foreground="#8995AD" FontSize="11" TextWrapping="Wrap" LineHeight="17" Margin="0,7,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#0C1323" BorderBrush="#202B42" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,12,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Очередь экспериментов" FontSize="12" FontWeight="SemiBold" />
+                                    <Button x:Name="ClearQueueButton" Grid.Column="1" Content="Очистить" Click="ClearQueueButton_Click"
+                                            Height="22" Padding="10,0" Style="{StaticResource DarkButton}" Background="Transparent"
+                                            Foreground="#65718A" FontSize="10" IsEnabled="False" />
+                                </Grid>
+                                <TextBlock Text="Серии запускаются по очереди; готовые можно открыть на графике" Foreground="#65718A" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0" />
+
+                                <Button x:Name="AddToQueueButton" Content="＋ Добавить текущие параметры" Click="AddToQueueButton_Click" Height="34" Margin="0,10,0,0" Style="{StaticResource DarkButton}" Background="#18243A" FontSize="12" />
+
+                                <ListBox x:Name="QueueList" MaxHeight="200" Margin="0,10,0,0" Background="Transparent" BorderThickness="0"
+                                         Foreground="#E8ECF5" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         SelectionChanged="QueueList_SelectionChanged">
+                                    <ListBox.Resources>
+                                        <Style BasedOn="{StaticResource SlimScrollBar}" TargetType="ScrollBar" />
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="Margin" Value="0,0,0,5" />
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="9"
+                                                                Padding="{TemplateBinding Padding}" Margin="{TemplateBinding Margin}"
+                                                                BorderBrush="#202B42" BorderThickness="1">
+                                                            <ContentPresenter />
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Bg" Property="Background" Value="#141D33" />
+                                                            </Trigger>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter TargetName="Bg" Property="Background" Value="#18243A" />
+                                                                <Setter TargetName="Bg" Property="BorderBrush" Value="#2C3B58" />
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.Resources>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="9,7">
+                                                <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Title}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusBrush}" FontSize="11" Margin="0,3,0,0" />
+                                                </StackPanel>
+                                                <Button Grid.Column="1" Content="✕" Click="RemoveQueueItem_Click" Width="22" Height="22" Padding="0"
+                                                        VerticalAlignment="Center" Style="{StaticResource DarkButton}" Background="Transparent"
+                                                        Foreground="#65718A" FontSize="11" ToolTip="Убрать из очереди" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <CheckBox x:Name="QueueSaveCheckBox" Content="Сохранять результаты очереди в базу данных"
+                                          Foreground="#8995AD" FontSize="11" Margin="0,10,0,0" />
+
+                                <Button x:Name="RunQueueButton" Content="Выполнить очередь" Click="RunQueueButton_Click" Height="40" Margin="0,10,0,0"
+                                        Style="{StaticResource DarkButton}" Background="#69D8C2" Foreground="#071411" FontSize="13" FontWeight="Bold" IsEnabled="False" />
+
+                                <TextBlock x:Name="QueueStatusText" Text="Очередь пуста" Foreground="#65718A" FontSize="11" Margin="0,9,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -228,7 +368,7 @@
                             <TextBlock Text="Эксперимент" Foreground="#AAB5C9" FontSize="11" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <Rectangle Width="13" Height="3" Fill="#FF8F78" VerticalAlignment="Center" Margin="0,0,7,0" />
+                            <Line X1="0" X2="14" Y1="0" Y2="0" Stroke="#FF8F78" StrokeThickness="2.2" StrokeDashArray="2.3 1.8" VerticalAlignment="Center" Margin="0,0,7,0" />
                             <TextBlock Text="Аппроксимация" Foreground="#AAB5C9" FontSize="11" />
                         </StackPanel>
                     </StackPanel>
@@ -253,10 +393,10 @@
                         <StackPanel><TextBlock Text="СРЕДНЕЕ ВРЕМЯ" Foreground="#8995AD" FontSize="10" FontWeight="SemiBold" /><TextBlock x:Name="MeanMetric" Text="—" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" /><TextBlock Text="по всем точкам" Foreground="#65718A" FontSize="10" Margin="0,3,0,0" /></StackPanel>
                     </Border>
                     <Border Grid.Column="2" Style="{StaticResource MetricCard}">
-                        <StackPanel><TextBlock Text="АППРОКСИМАЦИЯ" Foreground="#8995AD" FontSize="10" FontWeight="SemiBold" /><TextBlock x:Name="ComplexityMetric" Text="—" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" /><TextBlock x:Name="ComplexityNote" Text="ожидаемая сложность" Foreground="#65718A" FontSize="10" Margin="0,3,0,0" /></StackPanel>
+                        <StackPanel><TextBlock Text="АППРОКСИМАЦИЯ" Foreground="#8995AD" FontSize="10" FontWeight="SemiBold" /><TextBlock x:Name="ComplexityMetric" Text="—" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" Foreground="#FF9E8B" /><TextBlock x:Name="ComplexityNote" Text="ожидаемая сложность" Foreground="#65718A" FontSize="10" Margin="0,3,0,0" /></StackPanel>
                     </Border>
                     <Border Grid.Column="4" Style="{StaticResource MetricCard}">
-                        <StackPanel><TextBlock Text="ТОЧЕК НА ГРАФИКЕ" Foreground="#8995AD" FontSize="10" FontWeight="SemiBold" /><TextBlock x:Name="PointsMetric" Text="—" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" /><TextBlock x:Name="PointsNote" Text="размеров входных данных" Foreground="#65718A" FontSize="10" Margin="0,3,0,0" /></StackPanel>
+                        <StackPanel><TextBlock Text="ТОЧЕК НА ГРАФИКЕ" Foreground="#8995AD" FontSize="10" FontWeight="SemiBold" /><TextBlock x:Name="PointsMetric" Text="—" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" Foreground="#69D8C2" /><TextBlock x:Name="PointsNote" Text="размеров входных данных" Foreground="#65718A" FontSize="10" Margin="0,3,0,0" /></StackPanel>
                     </Border>
                 </Grid>
             </Grid>
