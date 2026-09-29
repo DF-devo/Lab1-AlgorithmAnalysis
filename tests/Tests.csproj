@@ -17,9 +17,9 @@
 		</PackageReference>
 		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.11" />
 
-		<!-- Явные обновления для устранения уязвимостей (GHSA-qj66-m88j-hmgj и GHSA-2m69-gcr7-jv3q) -->
+		<!-- Явные обновления для устранения уязвимостей (GHSA-qj66-m88j-hmgj и GHSA-2m69-gcr7-jv3q / CVE-2025-6965) -->
 		<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
-		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.8" />
+		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
 	</ItemGroup>
 
 	<ItemGroup>

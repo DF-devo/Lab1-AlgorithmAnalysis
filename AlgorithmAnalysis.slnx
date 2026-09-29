@@ -3,6 +3,7 @@
     <Project Path="src/Algorithms/Algorithms.csproj" />
     <Project Path="src/Core/Core.csproj" />
     <Project Path="src/UI/UI.csproj" />
+    <Project Path="src/TestConsole/TestConsole.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Tests.csproj" />

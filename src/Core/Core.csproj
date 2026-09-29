@@ -14,6 +14,9 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <!-- Явные обновления транзитивных зависимостей EF Core для устранения уязвимостей (GHSA-qj66-m88j-hmgj и GHSA-2m69-gcr7-jv3q / CVE-2025-6965) -->
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
 
 </Project>

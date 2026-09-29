@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -25,8 +26,9 @@ services.AddScoped<SeedService>();
 
 var provider = services.BuildServiceProvider();
 
-// 2. Инициализация БД
+// 2. Инициализация БД (создание таблиц + сидинг 15 алгоритмов)
 Console.WriteLine("Инициализация БД...");
+Console.WriteLine($"Файл базы: {dbPath}\n");
 using (var scope = provider.CreateScope())
 {
     var seeder = scope.ServiceProvider.GetRequiredService<SeedService>();
@@ -40,7 +42,6 @@ var mathService = provider.GetRequiredService<IMathService>();
 var dbService = provider.GetRequiredService<IDatabaseService>();
 
 // 4. Регистрация тестового алгоритма (Constant Function)
-// В реальном приложении это делается через DI или вручную при старте
 registry.Register(new ConstantFunctionAlgorithm());
 
 var algorithm = registry.GetAlgorithm("Constant Function");
@@ -50,24 +51,13 @@ if (algorithm == null)
     return;
 }
 
-// Получаем реальный ID алгоритма из БД для корректного кэширования
-using (var scope = provider.CreateScope())
-{
-    var ctx = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext();
-    var dbAlgo = await ctx.Algorithms.FirstOrDefaultAsync(a => a.Name == algorithm.Name);
-    if (dbAlgo != null)
-    {
-        // Хак для теста: передаем ID через замыкание или модифицируем раннер. 
-        // Для простоты теста просто выведем результаты.
-    }
-}
-
-Console.WriteLine($"\nЗапуск эксперимента для: {algorithm.Name}");
+Console.WriteLine($"Запуск эксперимента для: {algorithm.Name}");
 Console.WriteLine("N | Время (мс) | Шаги");
 Console.WriteLine("-----------------------");
 
-// 5. Запуск серии экспериментов
+// 5. Запуск серии экспериментов (первый прогон — вычисление + сохранение в SQLite)
 var progress = new Progress<double>(p => Console.Write($"\rПрогресс: {p:F1}%"));
+var stopwatch = Stopwatch.StartNew();
 var results = await runner.RunExperimentSeriesAsync(
     algorithm: algorithm,
     nMax: 1000,
@@ -77,10 +67,25 @@ var results = await runner.RunExperimentSeriesAsync(
     forceRecalculate: false,
     progress: progress
 );
-
+stopwatch.Stop();
 Console.WriteLine("\rПрогресс: 100.0%");
+Console.WriteLine($"[1-й прогон] Вычислено и сохранено в БД за {stopwatch.ElapsedMilliseconds} мс");
 
-// 6. Агрегация и анализ результатов
+// 6. Повторный запуск с теми же параметрами — все точки должны взяться из кэша SQLite
+stopwatch.Restart();
+var cachedResults = await runner.RunExperimentSeriesAsync(
+    algorithm: algorithm,
+    nMax: 1000,
+    step: 200,
+    runsCount: 3,
+    dataType: null,
+    forceRecalculate: false,
+    progress: progress
+);
+stopwatch.Stop();
+Console.WriteLine($"[2-й прогон] Прочитано из кэша БД за {stopwatch.ElapsedMilliseconds} мс ({cachedResults.Count} записей)\n");
+
+// 7. Агрегация и анализ результатов
 var grouped = results.GroupBy(r => r.N).OrderBy(g => g.Key).ToList();
 
 var nValues = grouped.Select(g => g.Key).ToList();
@@ -91,7 +96,7 @@ foreach (var g in grouped)
     Console.WriteLine($"{g.Key,3} | {g.Average(r => r.TimeMs),10:F4} | {g.First().Steps,4}");
 }
 
-// 7. Математический анализ
+// 8. Математический анализ
 var bestFit = mathService.DetectBestFitComplexity(nValues, avgTimeValues);
 Console.WriteLine($"\n[ANALYSIS] Лучшее совпадение сложности: {bestFit}");
 
@@ -101,8 +106,35 @@ var mse = mathService.CalculateMSE(avgTimeValues, approximated);
 Console.WriteLine($"[ANALYSIS] Константа C = {constant:F6}");
 Console.WriteLine($"[ANALYSIS] MSE = {mse:F6}");
 
-Console.WriteLine("\nТест успешно завершен! Нажмите любую клавишу...");
-Console.ReadKey();
+// 9. Итоговое содержимое базы данных
+using (var scope = provider.CreateScope())
+{
+    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+    using var ctx = await factory.CreateDbContextAsync();
+
+    int algorithmsCount = await ctx.Algorithms.CountAsync();
+    int experimentsCount = await ctx.Experiments.CountAsync();
+    int resultsCount = await ctx.ExperimentResults.CountAsync();
+
+    Console.WriteLine("\n[DB] Содержимое algorithm_analysis.db:");
+    Console.WriteLine($"[DB]   Алгоритмы:  {algorithmsCount}");
+    Console.WriteLine($"[DB]   Эксперименты: {experimentsCount}");
+    Console.WriteLine($"[DB]   Результаты: {resultsCount}");
+
+    var lastExperiment = await ctx.Experiments
+        .OrderByDescending(e => e.Id)
+        .FirstOrDefaultAsync();
+    if (lastExperiment != null)
+    {
+        var expResults = await dbService.GetResultsForExperimentAsync(lastExperiment.Id);
+        Console.WriteLine($"[DB]   Последний эксперимент ID={lastExperiment.Id} " +
+                          $"(AlgorithmId={lastExperiment.AlgorithmId}, N_max={lastExperiment.N_max}): {expResults.Count} результатов");
+    }
+}
+
+Console.WriteLine("\nТест успешно завершен!");
+if (!Console.IsInputRedirected)
+    Console.ReadKey();
 
 // --- Вспомогательный класс для теста (в реальном проекте будет в папке Algorithms) ---
 public class ConstantFunctionAlgorithm : IAlgorithm
@@ -118,9 +150,9 @@ public class ConstantFunctionAlgorithm : IAlgorithm
     public AlgorithmExecutionResult Execute(IAlgorithmInput input)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        
+
         // Эмуляция работы
-        int dummy = 42; 
+        int dummy = 42;
         System.Threading.Thread.Sleep(1); // Небольшая задержка для измеряемого времени
 
         sw.Stop();
