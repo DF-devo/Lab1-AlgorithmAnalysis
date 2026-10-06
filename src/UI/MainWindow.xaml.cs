@@ -1062,38 +1062,90 @@ public partial class MainWindow : Window
             Origin.X + (n - nMin) / nRange * sx * 0.94 - (m - mMin) / mRange * sy * 0.94,
             Origin.Y + (n - nMin) / nRange * sx * 0.42 + (m - mMin) / mRange * sy * 0.42 - z / zMax * sz);
 
-        // Пол сетки: линии по N и M на нулевой высоте
+        // Классическая композиция 3D-осей: задние стенки, пол, ось времени на левой вершине,
+        // деления N и M — по передним рёбрам ромба
         var (niceN, nTickStep, _) = NiceScale(nMax, divisions: 4);
         var (niceM, mTickStep, _) = NiceScale(mMax, divisions: 4);
+        var backTop = Project(nMin, mMin, 0);          // дальний угол
+        var backRight = Project(nMax, mMin, 0);        // правый угол пола
+        var backLeft = Project(nMin, mMax, 0);         // левый угол пола (здесь ось времени)
+        var front = Project(nMax, mMax, 0);            // ближний угол
+        var leftTop = Project(nMin, mMax, zMax);       // верх оси времени
+        var wallBrush = new SolidColorBrush(Color.FromArgb(70, 20, 30, 50));
+
+        // Задняя стенка вдоль M (плоскость n = nMin) и вдоль N (плоскость m = mMin)
+        var wallM = new Polygon
+        {
+            Points = new PointCollection(new[]
+            {
+                backTop, backLeft, leftTop, Project(nMin, mMin, zMax)
+            }),
+            Fill = wallBrush,
+            StrokeThickness = 0
+        };
+        var wallN = new Polygon
+        {
+            Points = new PointCollection(new[]
+            {
+                backTop, backRight, Project(nMax, mMin, zMax), Project(nMin, mMin, zMax)
+            }),
+            Fill = wallBrush,
+            StrokeThickness = 0
+        };
+        PlotCanvas.Children.Add(wallM);
+        PlotCanvas.Children.Add(wallN);
+
+        // Сетки на стенках: вертикали по делениям и горизонтали по времени
+        for (var v = Math.Ceiling(mMin / mTickStep - 1e-9) * mTickStep; v <= mMax + mTickStep * 1e-6; v += mTickStep)
+            AddLine(Project(nMin, v, 0), Project(nMin, v, zMax), GridBrush, 1);
+        for (var v = Math.Ceiling(nMin / nTickStep - 1e-9) * nTickStep; v <= nMax + nTickStep * 1e-6; v += nTickStep)
+            AddLine(Project(v, mMin, 0), Project(v, mMin, zMax), GridBrush, 1);
+        for (var z = zStep; z <= zMax + zStep * 1e-6; z += zStep)
+        {
+            AddLine(Project(nMin, mMin, z), Project(nMin, mMax, z), GridBrush, 1);
+            AddLine(Project(nMin, mMin, z), Project(nMax, mMin, z), GridBrush, 1);
+        }
+
+        // Пол: линии по N и M на нулевой высоте
         for (var v = (double)mMin; v <= mMax + mTickStep * 1e-6; v += mTickStep)
             AddLine(Project(nMin, v, 0), Project(nMax, v, 0), GridBrush, 1);
         for (var v = (double)nMin; v <= nMax + nTickStep * 1e-6; v += nTickStep)
             AddLine(Project(v, mMin, 0), Project(v, mMax, 0), GridBrush, 1);
 
-        // Оси
-        AddLine(Project(nMin, mMin, 0), Project(nMax, mMin, 0), AxisBrush, 1.4);
-        AddLine(Project(nMin, mMin, 0), Project(nMin, mMax, 0), AxisBrush, 1.4);
-        AddLine(Project(nMin, mMin, 0), Project(nMin, mMin, zMax), AxisBrush, 1.4);
+        // Рёбра ящика
+        AddLine(backTop, backRight, AxisBrush, 1.4);
+        AddLine(backTop, backLeft, AxisBrush, 1.4);
+        AddLine(backLeft, front, AxisBrush, 1.2);
+        AddLine(backRight, front, AxisBrush, 1.2);
+        AddLine(backLeft, leftTop, AxisBrush, 1.4);
+        AddLine(backTop, Project(nMin, mMin, zMax), AxisBrush, 1.2);
+        AddLine(backRight, Project(nMax, mMin, zMax), AxisBrush, 1.2);
+        AddLine(leftTop, Project(nMin, mMin, zMax), GridBrush, 1);
+        AddLine(Project(nMax, mMin, zMax), Project(nMin, mMin, zMax), GridBrush, 1);
 
-        // Подписи: N вдоль правого ребра, M вдоль левого, время — по вертикали
+        // Деления N — по переднему левому ребру (m = mMax), M — по переднему правому (n = nMax)
         for (var v = Math.Ceiling(nMin / nTickStep - 1e-9) * nTickStep; v <= nMax + nTickStep * 1e-6; v += nTickStep)
         {
-            var p = Project(v, mMin, 0);
-            AddText(FormatTick(v, 0), p.X - 36, p.Y + 8, 72, TickBrush, TextAlignment.Center, fontSize: 13);
+            var p = Project(v, mMax, 0);
+            AddText(FormatTick(v, 0), p.X - 34, p.Y + 7, 68, TickBrush, TextAlignment.Center, fontSize: 13);
         }
         for (var v = Math.Ceiling(mMin / mTickStep - 1e-9) * mTickStep; v <= mMax + mTickStep * 1e-6; v += mTickStep)
         {
-            var p = Project(nMin, v, 0);
-            AddText(FormatTick(v, 0), p.X - 60, p.Y + 8, 56, TickBrush, TextAlignment.Right, fontSize: 13);
+            var p = Project(nMax, v, 0);
+            AddText(FormatTick(v, 0), p.X + 12, p.Y + 7, 56, TickBrush, TextAlignment.Left, fontSize: 13);
         }
-        for (var v = zStep; v <= zMax + zStep * 1e-6; v += zStep)
+
+        // Ось времени — вертикаль на левой вершине ромба
+        for (var z = zStep; z <= zMax + zStep * 1e-6; z += zStep)
         {
-            var p = Project(nMin, mMin, v);
-            AddText(FormatTick(v, zDecimals), p.X - 78, p.Y - 9, 72, TickBrush, TextAlignment.Right, fontSize: 13);
+            var p = Project(nMin, mMax, z);
+            AddText(FormatTick(z, zDecimals), p.X - 74, p.Y - 9, 66, TickBrush, TextAlignment.Right, fontSize: 13);
         }
-        AddText("N", Project(nMax, mMin, 0).X - 10, Project(nMax, mMin, 0).Y + 26, 60, TextBrush, fontSize: 13);
-        AddText("M", Project(nMin, mMax, 0).X - 70, Project(nMin, mMax, 0).Y + 26, 60, TextBrush, TextAlignment.Right, fontSize: 13);
-        AddText("мс", Project(nMin, mMin, zMax).X - 78, Project(nMin, mMin, zMax).Y - 30, 60, TextBrush, fontSize: 12);
+        var midN = Project((nMin + nMax) / 2.0, mMax, 0);
+        var midM = Project(nMax, (mMin + mMax) / 2.0, 0);
+        AddText("N", midN.X - 66, midN.Y + 28, 60, TickBrush, TextAlignment.Right, fontSize: 13);
+        AddText("M", midM.X + 8, midM.Y + 28, 60, TickBrush, fontSize: 13);
+        AddText("мс", leftTop.X - 74, leftTop.Y - 28, 60, TextBrush, TextAlignment.Right, fontSize: 12);
         AddText("Поверхность времени · N × M", 4, 5, 260, TextBrush, fontSize: 12);
 
         // Поверхность: квадраты сортируются по глубине (i + j по возрастанию — дальние раньше),
