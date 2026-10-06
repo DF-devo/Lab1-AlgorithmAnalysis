@@ -641,13 +641,13 @@ public partial class MainWindow : Window
         (StringGenerator.GenerateRandomString(n, random), StringGenerator.GenerateRandomString(n, random));
 
     /// <summary>
-    /// Размеры входных данных с ровным шагом: только кратные шагу значения,
+    /// Размеры входных данных: первая точка — N = 1, далее ровный шаг (1, 1+шаг, 1+2·шаг, …),
     /// без «хвостовой» точки, ломающей равномерность.
     /// </summary>
     private static List<int> MakeSizes(int maxN, int step)
     {
         var sizes = new List<int>();
-        for (var n = step; n <= maxN; n += step)
+        for (var n = 1; n <= maxN; n += step)
             sizes.Add(n);
         if (sizes.Count == 0)
             sizes.Add(maxN);
@@ -707,7 +707,7 @@ public partial class MainWindow : Window
         double Estimate(int n, int st)
         {
             double sum = 0;
-            for (var v = st; v <= n; v += st)
+            for (var v = 1; v <= n; v += st)
                 sum += Basis(v);
             return unit * sum * runs;
         }
@@ -781,7 +781,6 @@ public partial class MainWindow : Window
                     sum += Basis(nn, mm);
             return unit * sum * runs;
         }
-
         var n = maxN;
         var st = step;
         var est = Estimate(n, st);
