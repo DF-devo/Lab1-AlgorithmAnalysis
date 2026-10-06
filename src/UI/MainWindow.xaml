@@ -252,11 +252,17 @@
                         </Grid>
 
                         <TextBlock Text="ВХОДНЫЕ ДАННЫЕ" Style="{StaticResource FieldLabel}" />
-                        <ComboBox x:Name="DataTypeCombo" Style="{StaticResource FieldCombo}" Margin="0,0,0,19" SelectedIndex="0">
+                        <ComboBox x:Name="DataTypeCombo" Style="{StaticResource FieldCombo}" Margin="0,0,0,14" SelectedIndex="0">
                             <sys:String>Случайные</sys:String>
                             <sys:String>Отсортированные</sys:String>
                             <sys:String>В обратном порядке</sys:String>
                         </ComboBox>
+
+                        <CheckBox x:Name="CompareCheck" Content="Сравнить два алгоритма на графике"
+                                  Foreground="#8995AD" FontSize="12" Margin="0,2,0,0"
+                                  Checked="CompareCheck_Changed" Unchecked="CompareCheck_Changed" />
+                        <ComboBox x:Name="CompareCombo" Style="{StaticResource FieldCombo}" DisplayMemberPath="Name"
+                                  Margin="0,9,0,0" Visibility="Collapsed" />
 
                         <Button x:Name="RunButton" Content="Построить график" Click="RunButton_Click" Height="46" Style="{StaticResource DarkButton}" Background="#69D8C2" Foreground="#071411" FontSize="14" FontWeight="Bold" />
                         <Button x:Name="CancelButton" Content="Остановить расчёт" Click="CancelButton_Click" Height="38" Margin="0,9,0,0" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" IsEnabled="False" />
@@ -362,16 +368,7 @@
                         <TextBlock Text="Визуализация" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock x:Name="ChartSubtitle" Text="Выполните серию измерений, чтобы увидеть зависимость времени от N" Foreground="#8995AD" FontSize="12" Margin="0,5,0,0" />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal" Margin="0,0,17,0">
-                            <Ellipse Width="8" Height="8" Fill="#69D8C2" VerticalAlignment="Center" Margin="0,0,7,0" />
-                            <TextBlock Text="Эксперимент" Foreground="#AAB5C9" FontSize="11" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <Line X1="0" X2="14" Y1="0" Y2="0" Stroke="#FF8F78" StrokeThickness="2.2" StrokeDashArray="2.3 1.8" VerticalAlignment="Center" Margin="0,0,7,0" />
-                            <TextBlock Text="Аппроксимация" Foreground="#AAB5C9" FontSize="11" />
-                        </StackPanel>
-                    </StackPanel>
+                    <StackPanel x:Name="LegendPanel" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" />
                 </Grid>
 
                 <Border Grid.Row="1" Background="#11182A" BorderBrush="#202B42" BorderThickness="1" CornerRadius="18" Padding="16">
