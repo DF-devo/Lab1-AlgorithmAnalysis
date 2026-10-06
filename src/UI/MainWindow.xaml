@@ -258,11 +258,13 @@
                             <sys:String>В обратном порядке</sys:String>
                         </ComboBox>
 
-                        <CheckBox x:Name="CompareCheck" Content="Сравнить два алгоритма на графике"
+                        <CheckBox x:Name="CompareCheck" Content="Сравнение алгоритмов (2 и более на одном графике)"
                                   Foreground="#8995AD" FontSize="12" Margin="0,2,0,0"
                                   Checked="CompareCheck_Changed" Unchecked="CompareCheck_Changed" />
-                        <ComboBox x:Name="CompareCombo" Style="{StaticResource FieldCombo}" DisplayMemberPath="Name"
-                                  Margin="0,9,0,0" Visibility="Collapsed" />
+                        <Button x:Name="PickCompareButton" Content="Выбрать алгоритмы для сравнения"
+                                Click="PickCompareButton_Click" Height="34" Margin="0,9,0,0"
+                                Style="{StaticResource DarkButton}" Background="#18243A" FontSize="12"
+                                Visibility="Collapsed" />
 
                         <Button x:Name="RunButton" Content="Построить график" Click="RunButton_Click" Height="46" Style="{StaticResource DarkButton}" Background="#69D8C2" Foreground="#071411" FontSize="14" FontWeight="Bold" />
                         <Button x:Name="CancelButton" Content="Остановить расчёт" Click="CancelButton_Click" Height="38" Margin="0,9,0,0" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" IsEnabled="False" />
@@ -272,6 +274,9 @@
                             <Button x:Name="SaveDbButton" Grid.Column="0" Content="Сохранить в БД" Click="SaveDbButton_Click" Height="36" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" IsEnabled="False" />
                             <Button x:Name="LoadDbButton" Grid.Column="2" Content="Загрузить из БД" Click="LoadDbButton_Click" Height="36" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" />
                         </Grid>
+
+                        <CheckBox x:Name="UseCacheCheck" Content="Кэш: подставлять прошлые результаты для тех же вводных"
+                                  IsChecked="True" Foreground="#8995AD" FontSize="11" Margin="0,10,0,0" />
 
                         <ProgressBar x:Name="RunProgress" Height="4" Margin="0,17,0,8" Minimum="0" Maximum="100" Value="0" Style="{StaticResource SlimProgress}" />
                         <TextBlock x:Name="StatusText" Text="Готов к запуску" Foreground="#8995AD" FontSize="11" />

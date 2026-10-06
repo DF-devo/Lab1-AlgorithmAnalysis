@@ -25,11 +25,11 @@ public partial class MainWindow : Window
     private static readonly Brush GridBrush = new SolidColorBrush(Color.FromRgb(36, 48, 70));
     private static readonly Brush AxisBrush = new SolidColorBrush(Color.FromRgb(105, 119, 145));
     private static readonly Brush TextBrush = new SolidColorBrush(Color.FromRgb(137, 149, 173));
+    private static readonly Brush TickBrush = new SolidColorBrush(Color.FromRgb(201, 211, 232));
     private static readonly Brush ExperimentBrush = new SolidColorBrush(Color.FromRgb(105, 216, 194));
-    private static readonly Brush ApproximationBrush = new SolidColorBrush(Color.FromRgb(255, 143, 120));
     private static readonly Brush AreaBrush = new SolidColorBrush(Color.FromArgb(30, 105, 216, 194));
-    private static readonly Brush ExperimentBrushB = new SolidColorBrush(Color.FromRgb(177, 140, 255));
-    private static readonly Brush AreaBrushB = new SolidColorBrush(Color.FromArgb(30, 177, 140, 255));
+    private static readonly SolidColorBrush SurfaceLow = new(Color.FromRgb(38, 52, 90));
+    private static readonly SolidColorBrush SurfaceHigh = new(Color.FromRgb(105, 216, 194));
 
     private readonly List<IAlgorithm> _algorithms =
     [
@@ -56,11 +56,12 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _cancellation;
     private bool _usesSteps;
 
-    // Вторая серия для режима сравнения (рисуется на том же поле)
-    private List<PlotPoint> _pointsB = [];
-    private List<PlotPoint> _approximationB = [];
-    private List<ExperimentResult> _currentRunResultsB = [];
-    private IAlgorithm? _algorithmB;
+    // Дополнительные серии для режима сравнения (2+ алгоритмов на одном поле)
+    private readonly List<ComparisonSeries> _comparison = [];
+    private List<IAlgorithm> _compareSelection = [];
+
+    // 3D-режим для матричных алгоритмов: поверхность время(N, M)
+    private List<GridPoint> _grid3d = [];
 
     // Параметры серии, отображённой на графике (нужны для сохранения в БД)
     private List<ExperimentResult> _currentRunResults = [];
@@ -79,11 +80,33 @@ public partial class MainWindow : Window
         InitializeComponent();
         AlgorithmCombo.ItemsSource = _algorithms;
         AlgorithmCombo.SelectedItem = _algorithms[1];
-        CompareCombo.ItemsSource = _algorithms;
         QueueList.ItemsSource = _queueItems;
+
+        // Автовыбор алгоритма для автоматизированных прогонов: UI.exe --algo:"Matrix Multiplication"
+        var args = Environment.GetCommandLineArgs();
+        var algoArg = args.FirstOrDefault(a => a.StartsWith("--algo:", StringComparison.OrdinalIgnoreCase));
+        if (algoArg is not null)
+        {
+            var name = algoArg["--algo:".Length..].Trim('"');
+            var match = _algorithms.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+                AlgorithmCombo.SelectedItem = match;
+        }
+
+        // Предвыбор серий сравнения: UI.exe --compare:"Strassen Multiplication;Bubble Sort"
+        var cmpArg = args.FirstOrDefault(a => a.StartsWith("--compare:", StringComparison.OrdinalIgnoreCase));
+        if (cmpArg is not null)
+        {
+            var names = cmpArg["--compare:".Length..].Trim('"').Split(';', StringSplitOptions.TrimEntries);
+            _compareSelection = _algorithms.Where(a => names.Contains(a.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+            CompareCheck.IsChecked = _compareSelection.Count > 0;
+            if (PickCompareButton is not null && _compareSelection.Count > 0)
+                PickCompareButton.Content = $"Выбрано для сравнения: {_compareSelection.Count}";
+        }
     }
 
     private IAlgorithm? SelectedAlgorithm => AlgorithmCombo.SelectedItem as IAlgorithm;
+    private bool Is3DMode => SelectedAlgorithm?.SupportsMatrixDimensions == true;
 
     private void AlgorithmCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -94,32 +117,35 @@ public partial class MainWindow : Window
         _usesSteps = algorithm.SupportsStepCounting;
         AlgorithmDescription.Text = algorithm.Description;
         var limit = GetMaximumAllowedN(algorithm);
-        MaxNBox.Text = algorithm switch
+
+        // Показательные вводные: достаточно большие, чтобы эксперимент шёл секунды
+        (MaxNBox.Text, StepBox.Text, RunsBox.Text) = algorithm switch
         {
-            MatrixMultiplication or StrassenMultiplication => "256",
-            BubbleSort => "4000",
-            LevenshteinAlgorithm => "2000",
-            PolynomialNaive => "4000",
-            PowerRecursive => "2000",
-            PowerIterative => "2000000",
-            _ => "200000"
+            BubbleSort => ("12000", "600", "3"),
+            QuickSort or Timsort => ("400000", "20000", "3"),
+            SumElements or ProductElements or PolynomialHorner => ("2000000", "100000", "3"),
+            ConstantFunction => ("1000000", "50000", "3"),
+            PolynomialNaive => ("8000", "400", "3"),
+            MatrixMultiplication or StrassenMultiplication => ("250", "25", "1"),
+            PowerIterative => ("3000000", "150000", "3"),
+            PowerRecursive => ("5000", "250", "3"),
+            PowerBinary => ("200000", "10000", "3"),
+            RabinKarpAlgorithm or BoyerMooreAlgorithm => ("2000000", "100000", "3"),
+            LevenshteinAlgorithm => ("4000", "200", "3"),
+            _ => ("100000", "5000", "3")
         };
+
         DataTypeCombo.IsEnabled = algorithm.SupportsDataType;
-        StepBox.Text = algorithm switch
-        {
-            MatrixMultiplication or StrassenMultiplication => "64",
-            BubbleSort or PolynomialNaive => "200",
-            LevenshteinAlgorithm or PowerRecursive => "100",
-            PowerIterative => "100000",
-            _ => "10000"
-        };
-        ChartSubtitle.Text = algorithm.SupportsStepCounting
-            ? $"{algorithm.Name} · рост количества операций, ожидаемая оценка O({ComplexityShortName(algorithm.TheoreticalComplexity)})"
-            : $"{algorithm.Name} · время выполнения при увеличении размера входных данных";
+        ChartSubtitle.Text = algorithm.SupportsMatrixDimensions
+            ? $"{algorithm.Name} · 3D-поверхность времени по N и M"
+            : algorithm.SupportsStepCounting
+                ? $"{algorithm.Name} · рост количества операций, ожидаемая оценка O({ComplexityShortName(algorithm.TheoreticalComplexity)})"
+                : $"{algorithm.Name} · время выполнения при увеличении размера входных данных";
 
         _points.Clear();
         _approximation.Clear();
         _currentRunResults.Clear();
+        _grid3d.Clear();
         _currentAlgorithmRef = null;
         _currentEntity = null;
         ResetComparison();
@@ -144,45 +170,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Второй алгоритм для сравнения (тот же тип замера обязателен)
-        IAlgorithm? second = null;
+        // Сравнение: отобранные алгоритмы, совместимые с основным по типу замера
+        var comparisons = new List<IAlgorithm>();
         if (CompareCheck.IsChecked == true)
         {
-            second = CompareCombo.SelectedItem as IAlgorithm;
-            if (second is null)
+            comparisons = _compareSelection
+                .Where(a => a.Name != algorithm.Name)
+                .Where(a => a.SupportsStepCounting == algorithm.SupportsStepCounting)
+                .ToList();
+            var skipped = _compareSelection.Count - comparisons.Count;
+            if (_compareSelection.Count > 0 && comparisons.Count == 0)
             {
-                StatusText.Text = "Выберите второй алгоритм для сравнения.";
+                StatusText.Text = "Выбранные для сравнения алгоритмы несовместимы с основным по типу замера (время/шаги).";
                 return;
             }
-            if (second.Name == algorithm.Name)
+            if (skipped > 0)
             {
-                StatusText.Text = "Для сравнения выберите другой алгоритм.";
-                return;
-            }
-            if (second.SupportsStepCounting != algorithm.SupportsStepCounting)
-            {
-                StatusText.Text = "Эти алгоритмы измеряются в разных величинах (время/шаги) — сравнение невозможно.";
-                return;
+                StatusText.Text = $"Несовместимые по типу замера алгоритмы пропущены ({skipped}).";
             }
         }
 
-        // Автоподбор масштаба: серия должна длиться ~5–6 секунд.
-        // При сравнении берём минимум двух подборов, чтобы более тяжёлый алгоритм не растянул серию на минуты.
-        var (fitN, fitStep, adjusted) = AutoFitSeries(algorithm, maxN, step, runs, dataType);
-        if (second is not null)
-        {
-            var (fitN2, fitStep2, _) = AutoFitSeries(second, maxN, step, runs, dataType);
-            if (fitN2 < fitN)
-                (fitN, fitStep) = (fitN2, fitStep2);
-        }
-        if (adjusted || fitN != maxN || fitStep != step)
-        {
-            MaxNBox.Text = fitN.ToString(CultureInfo.CurrentCulture);
-            StepBox.Text = fitStep.ToString(CultureInfo.CurrentCulture);
-        }
-
+        var useCache = UseCacheCheck.IsChecked == true;
         _points.Clear();
         _approximation.Clear();
+        _grid3d.Clear();
         ResetComparison();
         EmptyState.Visibility = Visibility.Visible;
         DrawEmptyChartFrame();
@@ -191,70 +202,21 @@ public partial class MainWindow : Window
         CancelButton.IsEnabled = true;
         RunProgress.Value = 0;
         StatusText.Text = "Подготовка эксперимента…";
-        ChartSubtitle.Text = second is null
-            ? $"{algorithm.Name} · 0 из {MakeSizes(fitN, fitStep).Count} размеров"
-            : $"{algorithm.Name} vs {second.Name} · подготовка…";
 
-        var sizes = MakeSizes(fitN, fitStep);
         var token = _cancellation.Token;
-        var progress = new Progress<(int Completed, int Total, int CurrentN)>(p =>
-        {
-            RunProgress.Value = second is null
-                ? (double)p.Completed / p.Total * 100
-                : (double)p.Completed / p.Total * 45;
-            StatusText.Text = second is null
-                ? $"Измерение N = {p.CurrentN:N0} · {p.Completed} из {p.Total}"
-                : $"Сравнение · {algorithm.Name}: N = {p.CurrentN:N0} · {p.Completed} из {p.Total}";
-            ChartSubtitle.Text = second is null
-                ? $"{algorithm.Name} · {p.Completed} из {p.Total} размеров"
-                : $"{algorithm.Name} vs {second.Name} · серия A · {p.Completed} из {p.Total}";
-        });
-        var progressB = new Progress<(int Completed, int Total, int CurrentN)>(p =>
-        {
-            RunProgress.Value = 45 + (double)p.Completed / p.Total * 45;
-            StatusText.Text = $"Сравнение · {second!.Name}: N = {p.CurrentN:N0} · {p.Completed} из {p.Total}";
-            ChartSubtitle.Text = $"{algorithm.Name} vs {second.Name} · серия B · {p.Completed} из {p.Total}";
-        });
-
         try
         {
-            var result = await Task.Run(
-                () => RunMeasurements(algorithm, sizes, runs, dataType, token, progress), token);
+            // Кэш и резолв алгоритма работают с БД — она должна быть создана и засеяна
+            await UiDatabase.EnsureInitializedAsync();
 
-            _points = result.Points;
-            _currentRunResults = result.Results;
-            _usesSteps = algorithm.SupportsStepCounting;
-            _lastRunCount = runs;
-            _currentAlgorithmRef = algorithm;
-            _currentEntity = null;
-            _currentMaxN = fitN;
-            _currentStep = fitStep;
-            _currentRuns = runs;
-            _currentDataType = dataType;
-            _approximation = FitExpectedCurve(_points, algorithm.TheoreticalComplexity);
-
-            if (second is not null)
+            if (algorithm.SupportsMatrixDimensions)
             {
-                var resultB = await Task.Run(
-                    () => RunMeasurements(second, sizes, runs, dataType, token, progressB), token);
-                _pointsB = resultB.Points;
-                _currentRunResultsB = resultB.Results;
-                _algorithmB = second;
-                _approximationB = FitExpectedCurve(_pointsB, second.TheoreticalComplexity);
+                await RunMatrixExperimentAsync(algorithm, maxN, step, runs, comparisons, useCache, token);
             }
-
-            EmptyState.Visibility = Visibility.Collapsed;
-            SaveDbButton.IsEnabled = true;
-            UpdateSummary(algorithm, second);
-            UpdateLegend();
-            RedrawChart();
-            RunProgress.Value = 100;
-            StatusText.Text = second is null
-                ? $"Готово · {_points.Count} точек, по {runs} запуск(а/ов) на каждую"
-                : $"Готово · сравнение по {_points.Count} точкам, по {runs} запуск(а/ов) на каждую";
-            ChartSubtitle.Text = second is null
-                ? $"{algorithm.Name} · {(_usesSteps ? "число операций" : "время выполнения")}"
-                : $"{algorithm.Name} vs {second.Name} · {(_usesSteps ? "число операций" : "время выполнения")}";
+            else
+            {
+                await RunFlatExperimentAsync(algorithm, maxN, step, runs, dataType, comparisons, useCache, token);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -275,20 +237,159 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Сбрасывает вторую серию сравнения.</summary>
-    private void ResetComparison()
+    /// <summary>Обычный 2D-эксперимент: основная серия + кривые сравнения.</summary>
+    private async Task RunFlatExperimentAsync(
+        IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType,
+        List<IAlgorithm> comparisons, bool useCache, CancellationToken token)
     {
-        _pointsB = [];
-        _approximationB = [];
-        _currentRunResultsB = [];
-        _algorithmB = null;
-        if (LegendPanel is not null)
-            UpdateLegend();
+        var (fitN, fitStep, adjusted) = AutoFitSeries(algorithm, maxN, step, runs, dataType);
+
+        // При сравнении берём минимум по всем подборам, чтобы тяжёлый алгоритм не растянул серию
+        foreach (var other in comparisons)
+        {
+            var (otherN, otherStep, _) = AutoFitSeries(other, fitN, fitStep, runs, dataType);
+            if (otherN < fitN)
+                (fitN, fitStep) = (otherN, otherStep);
+        }
+        ApplyFittedScale(fitN, fitStep, adjusted);
+
+        var sizes = MakeSizes(fitN, fitStep);
+        var entity = await UiDatabase.ResolveAlgorithmAsync(algorithm);
+        var progressA = MakeProgress(0, comparisons.Count == 0 ? 1.0 : 0.55, algorithm);
+        var (points, results, cachedMain) = await Task.Run(
+            () => RunSeries2DAsync(algorithm, entity, sizes, runs, dataType, useCache, token, progressA), token);
+
+        _points = points;
+        _currentRunResults = results;
+        _usesSteps = algorithm.SupportsStepCounting;
+        _lastRunCount = runs;
+        _currentAlgorithmRef = algorithm;
+        _currentEntity = entity;
+        _currentMaxN = fitN;
+        _currentStep = fitStep;
+        _currentRuns = runs;
+        _currentDataType = dataType;
+        _approximation = FitExpectedCurve(_points, algorithm.TheoreticalComplexity);
+
+        // Серии сравнения на тех же размерах
+        var totalCached = cachedMain;
+        for (var i = 0; i < comparisons.Count; i++)
+        {
+            var other = comparisons[i];
+            var otherEntity = await UiDatabase.ResolveAlgorithmAsync(other);
+            var share = 0.45 / comparisons.Count;
+            var progressB = MakeProgress(0.55 + share * i, share, other);
+            var (pointsB, resultsB, cachedB) = await Task.Run(
+                () => RunSeries2DAsync(other, otherEntity, sizes, runs, dataType, useCache, token, progressB), token);
+            totalCached += cachedB;
+            _comparison.Add(new ComparisonSeries
+            {
+                Algorithm = other,
+                Brush = ComparisonPalette()[(i + 1) % ComparisonPalette().Length],
+                Points = pointsB,
+                Approximation = FitExpectedCurve(pointsB, other.TheoreticalComplexity),
+                Results = resultsB
+            });
+        }
+
+        EmptyState.Visibility = Visibility.Collapsed;
+        SaveDbButton.IsEnabled = true;
+        UpdateSummary(algorithm);
+        UpdateLegend();
+        RedrawChart();
+        RunProgress.Value = 100;
+        StatusText.Text = BuildDoneStatus(_points.Count, totalCached, runs, comparisons.Count);
+        ChartSubtitle.Text = comparisons.Count > 0
+            ? $"{algorithm.Name} vs {string.Join(" vs ", _comparison.Select(c => c.Algorithm.Name))} · {(_usesSteps ? "число операций" : "время выполнения")}"
+            : $"{algorithm.Name} · {(_usesSteps ? "число операций" : "время выполнения")}";
     }
 
-    /// <summary>Второй алгоритм сравнения либо null.</summary>
-    private IAlgorithm? ComparisonTarget =>
-        CompareCheck.IsChecked == true ? CompareCombo.SelectedItem as IAlgorithm : null;
+    /// <summary>Матричный 3D-эксперимент: поверхность время(N, M) + диагональные кривые сравнения.</summary>
+    private async Task RunMatrixExperimentAsync(
+        IAlgorithm algorithm, int maxN, int step, int runs,
+        List<IAlgorithm> comparisons, bool useCache, CancellationToken token)
+    {
+        // Для сравнения диагональ меряется по тем же N, поэтому масштаб — минимум по всем
+        var (fitN, fitStep, adjusted) = AutoFitSeries3D(algorithm, maxN, step, runs);
+        foreach (var other in comparisons)
+        {
+            var (otherN, otherStep, _) = AutoFitSeries(other, fitN, fitStep, runs, DataType.Random);
+            if (otherN < fitN)
+                (fitN, fitStep) = (otherN, otherStep);
+        }
+        ApplyFittedScale(fitN, fitStep, adjusted);
+
+        var entity = await UiDatabase.ResolveAlgorithmAsync(algorithm);
+        var progressA = MakeProgress(0, comparisons.Count == 0 ? 1.0 : 0.6, algorithm);
+        var (grid, results, cachedCells) = await Task.Run(
+            () => RunSeries3DAsync(algorithm, entity, fitN, fitStep, runs, useCache, token, progressA), token);
+
+        _grid3d = grid;
+        _currentRunResults = results;
+        _usesSteps = false;
+        _lastRunCount = runs;
+        _currentAlgorithmRef = algorithm;
+        _currentEntity = entity;
+        _currentMaxN = fitN;
+        _currentStep = fitStep;
+        _currentRuns = runs;
+        _currentDataType = DataType.Random;
+
+        var totalCached = cachedCells;
+        for (var i = 0; i < comparisons.Count; i++)
+        {
+            var other = comparisons[i];
+            var otherEntity = await UiDatabase.ResolveAlgorithmAsync(other);
+            var share = 0.4 / comparisons.Count;
+            var progressB = MakeProgress(0.6 + share * i, share, other);
+            // Кривая сравнения идёт по диагонали (N, N) — общий срез с поверхностью
+            var (pointsB, resultsB, cachedB) = await Task.Run(
+                () => RunSeries2DAsync(other, otherEntity, MakeSizes(fitN, fitStep), runs, DataType.Random, useCache, token, progressB), token);
+            totalCached += cachedB;
+            _comparison.Add(new ComparisonSeries
+            {
+                Algorithm = other,
+                Brush = ComparisonPalette()[(i + 1) % ComparisonPalette().Length],
+                Points = pointsB,
+                Approximation = FitExpectedCurve(pointsB, other.TheoreticalComplexity),
+                Results = resultsB
+            });
+        }
+
+        EmptyState.Visibility = Visibility.Collapsed;
+        SaveDbButton.IsEnabled = true;
+        UpdateSummary(algorithm);
+        UpdateLegend();
+        RedrawChart();
+        RunProgress.Value = 100;
+        StatusText.Text = BuildDoneStatus(_grid3d.Count, totalCached, runs, comparisons.Count);
+        ChartSubtitle.Text = $"{algorithm.Name} · 3D: время (N × M)" +
+                             (comparisons.Count > 0 ? $" · сравнение по диагонали M = N: {string.Join(", ", _comparison.Select(c => c.Algorithm.Name))}" : string.Empty);
+    }
+
+    private void ApplyFittedScale(int fitN, int fitStep, bool adjusted)
+    {
+        if (adjusted || fitN.ToString(CultureInfo.CurrentCulture) != MaxNBox.Text)
+        {
+            MaxNBox.Text = fitN.ToString(CultureInfo.CurrentCulture);
+            StepBox.Text = fitStep.ToString(CultureInfo.CurrentCulture);
+        }
+    }
+
+    private string BuildDoneStatus(int points, int cached, int runs, int comparisons) =>
+        $"Готово · {points} точек{(cached > 0 ? $", {cached} из кэша БД" : string.Empty)}, по {runs} запуск(а/ов) на каждую" +
+        (comparisons > 0 ? $" · сравнение: {comparisons + 1} алгоритмов" : string.Empty);
+
+    /// <summary>Прогресс с отображением на отведённый серии диапазон [offset, offset+share].</summary>
+    private Progress<(int Completed, int Total, int CurrentN)> MakeProgress(double offset, double share, IAlgorithm owner)
+    {
+        return new Progress<(int Completed, int Total, int CurrentN)>(p =>
+        {
+            RunProgress.Value = (offset + share * (double)p.Completed / p.Total) * 100;
+            StatusText.Text = $"Измерение · {owner.Name}: N = {p.CurrentN:N0} · {p.Completed} из {p.Total}";
+            ChartSubtitle.Text = $"{owner.Name} · {p.Completed} из {p.Total}";
+        });
+    }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
@@ -298,52 +399,174 @@ public partial class MainWindow : Window
 
     private void PlotCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (_points.Count > 0)
+        if (_points.Count > 0 || _grid3d.Count > 0)
             RedrawChart();
         else
             DrawEmptyChartFrame();
     }
 
-    private static (List<PlotPoint> Points, List<ExperimentResult> Results) RunMeasurements(
+    // ---------- Измерение серий (с кэшем БД по вводным) ----------
+
+    private async Task<(List<PlotPoint> Points, List<ExperimentResult> Results, int CachedPoints)> RunSeries2DAsync(
         IAlgorithm algorithm,
+        Algorithm entity,
         IReadOnlyList<int> sizes,
         int runs,
         DataType dataType,
+        bool useCache,
         CancellationToken cancellationToken,
         IProgress<(int Completed, int Total, int CurrentN)> progress)
     {
         var points = new List<PlotPoint>(sizes.Count);
-        var runResults = new List<ExperimentResult>(sizes.Count * runs);
+        var freshResults = new List<ExperimentResult>(sizes.Count * runs);
+        var cachedPoints = 0;
         var random = new Random(7411);
-        var matrix = algorithm is MatrixMultiplication or StrassenMultiplication;
+        var matrix = algorithm.SupportsMatrixDimensions;
+        var cacheDataType = algorithm.SupportsDataType ? dataType : DataType.Random;
+        var db = UiDatabase.CreateDatabaseService();
 
         for (var index = 0; index < sizes.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var n = sizes[index];
-            double total = 0;
+            int? m = matrix ? n : null;
 
+            // Кэш: тот же алгоритм с теми же вводными (N, M, тип данных) уже выполнялся?
+            if (useCache)
+            {
+                var rows = await db.GetCachedResultsAsync(entity.Id, n, cacheDataType, m);
+                if (rows.Count >= runs)
+                {
+                    var taken = rows.OrderBy(r => r.RunNumber).Take(runs).ToList();
+                    cachedPoints++;
+                    double total = 0;
+                    foreach (var row in taken)
+                        total += algorithm.SupportsStepCounting ? row.Steps : row.TimeMs;
+                    points.Add(new PlotPoint(n, total / taken.Count, FromCache: true));
+                    progress.Report((index + 1, sizes.Count, n));
+                    continue;
+                }
+            }
+
+            var fresh = new List<ExperimentResult>(runs);
+            double sum = 0;
             for (var run = 0; run < runs; run++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var input = CreateInput(algorithm, n, dataType, random);
+                var input = CreateInput(algorithm, n, m, dataType, random);
                 var measurement = algorithm.Execute(input);
-                total += algorithm.SupportsStepCounting ? measurement.Steps : measurement.TimeMs;
-                runResults.Add(new ExperimentResult
+                sum += algorithm.SupportsStepCounting ? measurement.Steps : measurement.TimeMs;
+                fresh.Add(new ExperimentResult
                 {
                     N = n,
-                    M = matrix ? n : null,
+                    M = m,
                     RunNumber = run + 1,
                     TimeMs = measurement.TimeMs,
                     Steps = measurement.Steps
                 });
             }
+            freshResults.AddRange(fresh);
 
-            points.Add(new PlotPoint(n, total / runs));
+            if (useCache)
+            {
+                var experiment = new Experiment
+                {
+                    AlgorithmId = entity.Id,
+                    Algorithm = entity,
+                    Date = DateTime.UtcNow,
+                    N_max = n,
+                    Step = n,
+                    RunsCount = runs,
+                    DataType = cacheDataType
+                };
+                await db.SaveExperimentAsync(experiment, fresh);
+            }
+
+            points.Add(new PlotPoint(n, sum / runs));
             progress.Report((index + 1, sizes.Count, n));
         }
 
-        return (points, runResults);
+        return (points, freshResults, cachedPoints);
+    }
+
+    private async Task<(List<GridPoint> Grid, List<ExperimentResult> Results, int CachedCells)> RunSeries3DAsync(
+        IAlgorithm algorithm,
+        Algorithm entity,
+        int nMax,
+        int step,
+        int runs,
+        bool useCache,
+        CancellationToken cancellationToken,
+        IProgress<(int Completed, int Total, int CurrentN)> progress)
+    {
+        var grid = new List<GridPoint>();
+        var freshResults = new List<ExperimentResult>();
+        var cachedCells = 0;
+        var random = new Random(7411);
+        var db = UiDatabase.CreateDatabaseService();
+        var sizes = MakeSizes(nMax, step);
+        var total = sizes.Count * sizes.Count;
+        var done = 0;
+
+        foreach (var n in sizes)
+        {
+            foreach (var m in sizes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (useCache)
+                {
+                    var rows = await db.GetCachedResultsAsync(entity.Id, n, DataType.Random, m);
+                    if (rows.Count >= runs)
+                    {
+                        var taken = rows.OrderBy(r => r.RunNumber).Take(runs).ToList();
+                        cachedCells++;
+                        grid.Add(new GridPoint(n, m, taken.Average(r => r.TimeMs), FromCache: true));
+                        done++;
+                        progress.Report((done, total, n));
+                        continue;
+                    }
+                }
+
+                var fresh = new List<ExperimentResult>(runs);
+                for (var run = 0; run < runs; run++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var input = CreateInput(algorithm, n, m, DataType.Random, random);
+                    var measurement = algorithm.Execute(input);
+                    fresh.Add(new ExperimentResult
+                    {
+                        N = n,
+                        M = m,
+                        RunNumber = run + 1,
+                        TimeMs = measurement.TimeMs,
+                        Steps = measurement.Steps
+                    });
+                }
+                freshResults.AddRange(fresh);
+
+                if (useCache)
+                {
+                    var experiment = new Experiment
+                    {
+                        AlgorithmId = entity.Id,
+                        Algorithm = entity,
+                        Date = DateTime.UtcNow,
+                        N_max = n,
+                        Step = n,
+                        RunsCount = runs,
+                        DataType = DataType.Random
+                    };
+                    await db.SaveExperimentAsync(experiment, fresh);
+                }
+
+                grid.Add(new GridPoint(n, m, fresh.Average(r => r.TimeMs)));
+                done++;
+                progress.Report((done, total, n));
+            }
+        }
+
+        return (grid, freshResults, cachedCells);
     }
 
     private bool TryReadRunParameters(
@@ -373,9 +596,11 @@ public partial class MainWindow : Window
             error = $"Допустимые значения: N от 2 до {maxAllowed:N0}, шаг от 1 до N, 1–20 запусков.";
             return false;
         }
-        if (MakeSizes(maxN, step).Count > 120)
+        if (MakeSizes(maxN, step).Count > (algo.SupportsMatrixDimensions ? 15 : 120))
         {
-            error = "Слишком много точек. Увеличьте шаг так, чтобы на графике было не больше 120 размеров.";
+            error = algo.SupportsMatrixDimensions
+                ? "Слишком густая сетка для 3D. Увеличьте шаг (рекомендуется до 10–15 значений на ось)."
+                : "Слишком много точек. Увеличьте шаг так, чтобы на графике было не больше 120 размеров.";
             return false;
         }
 
@@ -384,10 +609,73 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private static AlgorithmInput CreateInput(IAlgorithm algorithm, int n, int? m, DataType dataType, Random random)
+    {
+        object data = algorithm switch
+        {
+            MatrixMultiplication or StrassenMultiplication => Array.Empty<double>(),
+            RabinKarpAlgorithm or BoyerMooreAlgorithm => CreateSearchInput(n, random),
+            LevenshteinAlgorithm => CreateLevenshteinInput(n, random),
+            _ => VectorGenerator.GenerateForDataType(n, dataType)
+        };
+
+        return new AlgorithmInput
+        {
+            N = n,
+            M = algorithm.SupportsMatrixDimensions ? (m ?? n) : null,
+            DataType = dataType,
+            Data = data
+        };
+    }
+
+    private static (string text, string pattern) CreateSearchInput(int n, Random random)
+    {
+        var text = StringGenerator.GenerateRandomString(n, random);
+        var patternLength = Math.Max(1, Math.Min(12, n / 10));
+        var pattern = StringGenerator.GenerateRandomString(patternLength, random);
+        return (text, pattern);
+    }
+
+    private static (string first, string second) CreateLevenshteinInput(int n, Random random) =>
+        (StringGenerator.GenerateRandomString(n, random), StringGenerator.GenerateRandomString(n, random));
+
     /// <summary>
-    /// Подбирает N и шаг так, чтобы серия длилась примерно 5–6 секунд:
-    /// пилотный замер времени на малом входе, экстраполяция по теоретической сложности
-    /// и подбор N удвоением (вверх) или делением (вниз) в пределах лимита алгоритма.
+    /// Размеры входных данных с ровным шагом: только кратные шагу значения,
+    /// без «хвостовой» точки, ломающей равномерность.
+    /// </summary>
+    private static List<int> MakeSizes(int maxN, int step)
+    {
+        var sizes = new List<int>();
+        for (var n = step; n <= maxN; n += step)
+            sizes.Add(n);
+        if (sizes.Count == 0)
+            sizes.Add(maxN);
+        return sizes;
+    }
+
+    private static List<PlotPoint> FitExpectedCurve(IReadOnlyList<PlotPoint> points, ComplexityType complexity)
+    {
+        if (points.Count == 0)
+            return [];
+
+        var numerator = 0d;
+        var denominator = 0d;
+        foreach (var point in points)
+        {
+            var basis = ComplexityBasis(point.N, complexity);
+            numerator += basis * point.Value;
+            denominator += basis * basis;
+        }
+
+        var coefficient = denominator <= double.Epsilon ? 0 : numerator / denominator;
+        return points.Select(point => new PlotPoint(point.N, coefficient * ComplexityBasis(point.N, complexity))).ToList();
+    }
+
+    // ---------- Автоподбор масштаба (серия ~5–6 секунд) ----------
+
+    /// <summary>
+    /// Пилотный замер на малом входе + экстраполяция по теоретической сложности;
+    /// N удваивается (вверх) или делится (вниз), пока оценка серии не попадёт в ~5–8 с.
     /// </summary>
     private (int NMax, int Step, bool Adjusted) AutoFitSeries(
         IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType)
@@ -396,22 +684,20 @@ public partial class MainWindow : Window
         const double targetMaxMs = 8000;
         var cap = GetMaximumAllowedN(algorithm);
 
-        // Пилотный замер: прогрев JIT + три прогона, берём среднее
         int pilot = Math.Min(PilotSize(algorithm), cap);
         var random = new Random(7411);
         double pilotMs = 0;
-        _ = algorithm.Execute(CreateInput(algorithm, pilot, dataType, random));
+        _ = algorithm.Execute(CreateInput(algorithm, pilot, null, dataType, random));
         const int pilotRuns = 3;
         for (var i = 0; i < pilotRuns; i++)
         {
             var sw = Stopwatch.StartNew();
-            algorithm.Execute(CreateInput(algorithm, pilot, dataType, random));
+            algorithm.Execute(CreateInput(algorithm, pilot, null, dataType, random));
             pilotMs += sw.Elapsed.TotalMilliseconds;
         }
         pilotMs = Math.Max(0.0001, pilotMs / pilotRuns);
 
         var complexity = algorithm.TheoreticalComplexity;
-        // Штрассен дополняет матрицу до степени двойки и делает внутренний прогрев — его база умножается с поправкой
         double Basis(int size) => algorithm is StrassenMultiplication
             ? Math.Pow(NextPowerOfTwo(size), 2.81) * 2
             : ComplexityBasis(size, complexity);
@@ -422,8 +708,6 @@ public partial class MainWindow : Window
             double sum = 0;
             for (var v = st; v <= n; v += st)
                 sum += Basis(v);
-            if (n % st != 0)
-                sum += Basis(n); // MakeSizes всегда добавляет maxN
             return unit * sum * runs;
         }
 
@@ -455,7 +739,6 @@ public partial class MainWindow : Window
                 break;
         }
 
-        // Не больше 30 точек на серии — иначе график нечитаем
         if (n / st > 30)
             st = Math.Max(1, n / 30);
         if (st > n)
@@ -464,81 +747,109 @@ public partial class MainWindow : Window
         return (n, st, n != maxN || st != step);
     }
 
-    private static AlgorithmInput CreateInput(IAlgorithm algorithm, int n, DataType dataType, Random random)
+    /// <summary>Автоподбор для 3D-сетки матричного алгоритма: база стоимости N²·M (или N^2.81 у Штрассена).</summary>
+    private (int NMax, int Step, bool Adjusted) AutoFitSeries3D(IAlgorithm algorithm, int maxN, int step, int runs)
     {
-        object data = algorithm switch
+        const double targetMinMs = 4500;
+        const double targetMaxMs = 8000;
+        var cap = GetMaximumAllowedN(algorithm);
+
+        int pilot = Math.Min(128, cap);
+        var random = new Random(7411);
+        double pilotMs = 0;
+        _ = algorithm.Execute(CreateInput(algorithm, pilot, pilot, DataType.Random, random));
+        for (var i = 0; i < 3; i++)
         {
-            MatrixMultiplication or StrassenMultiplication => Array.Empty<double>(),
-            RabinKarpAlgorithm or BoyerMooreAlgorithm => CreateSearchInput(n, random),
-            LevenshteinAlgorithm => CreateLevenshteinInput(n, random),
-            _ => VectorGenerator.GenerateForDataType(n, dataType)
-        };
+            var sw = Stopwatch.StartNew();
+            algorithm.Execute(CreateInput(algorithm, pilot, pilot, DataType.Random, random));
+            pilotMs += sw.Elapsed.TotalMilliseconds;
+        }
+        pilotMs = Math.Max(0.0001, pilotMs / 3);
 
-        return new AlgorithmInput
+        double Basis(int n, int m) => algorithm is StrassenMultiplication
+            ? Math.Pow(NextPowerOfTwo(Math.Max(n, m)), 2.81) * 2
+            : (double)n * n * m;
+        double unit = pilotMs / Math.Max(1e-9, Basis(pilot, pilot));
+
+        double Estimate(int n, int st)
         {
-            N = n,
-            M = algorithm is MatrixMultiplication or StrassenMultiplication ? n : null,
-            DataType = dataType,
-            Data = data
-        };
-    }
-
-    private static (string text, string pattern) CreateSearchInput(int n, Random random)
-    {
-        var text = StringGenerator.GenerateRandomString(n, random);
-        var patternLength = Math.Max(1, Math.Min(12, n / 10));
-        var pattern = StringGenerator.GenerateRandomString(patternLength, random);
-        return (text, pattern);
-    }
-
-    private static (string first, string second) CreateLevenshteinInput(int n, Random random) =>
-        (StringGenerator.GenerateRandomString(n, random), StringGenerator.GenerateRandomString(n, random));
-
-    private static List<int> MakeSizes(int maxN, int step)
-    {
-        var sizes = new List<int>();
-        for (var n = step; n <= maxN; n += step)
-            sizes.Add(n);
-        if (sizes.Count == 0 || sizes[^1] != maxN)
-            sizes.Add(maxN);
-        return sizes;
-    }
-
-    private static List<PlotPoint> FitExpectedCurve(IReadOnlyList<PlotPoint> points, ComplexityType complexity)
-    {
-        if (points.Count == 0)
-            return [];
-
-        var numerator = 0d;
-        var denominator = 0d;
-        foreach (var point in points)
-        {
-            var basis = ComplexityBasis(point.N, complexity);
-            numerator += basis * point.Value;
-            denominator += basis * basis;
+            double sum = 0;
+            var sizes = MakeSizes(n, st);
+            foreach (var nn in sizes)
+                foreach (var mm in sizes)
+                    sum += Basis(nn, mm);
+            return unit * sum * runs;
         }
 
-        var coefficient = denominator <= double.Epsilon ? 0 : numerator / denominator;
-        return points.Select(point => new PlotPoint(point.N, coefficient * ComplexityBasis(point.N, complexity))).ToList();
+        var n = maxN;
+        var st = step;
+        var est = Estimate(n, st);
+
+        if (est < targetMinMs)
+        {
+            while (n < cap)
+            {
+                var nextN = (int)Math.Min((long)n * 2, cap);
+                var nextStep = Math.Max(1, (int)Math.Round((double)nextN * st / n));
+                n = nextN;
+                st = nextStep;
+                est = Estimate(n, st);
+                if (est >= targetMinMs)
+                    break;
+            }
+        }
+        while (est > targetMaxMs && n > 64)
+        {
+            var nextN = Math.Max(64, (int)(n / 1.6));
+            var nextStep = Math.Max(1, (int)Math.Round((double)nextN * st / n));
+            n = nextN;
+            st = nextStep;
+            est = Estimate(n, st);
+            if (est <= targetMaxMs)
+                break;
+        }
+
+        // Не гуще 10 значений на ось
+        if (n / st > 10)
+            st = Math.Max(1, n / 10);
+        if (st > n)
+            st = n;
+
+        return (n, st, n != maxN || st != step);
     }
 
-    private void UpdateSummary(IAlgorithm algorithm, IAlgorithm? second = null)
+    // ---------- Метрики, легенда ----------
+
+    private void UpdateSummary(IAlgorithm algorithm)
     {
-        var mean = _points.Average(point => point.Value);
-        var comparing = second is not null && _pointsB.Count > 0;
+        if (_grid3d.Count > 0)
+        {
+            var mean = _grid3d.Average(p => p.Value);
+            MeanMetric.Text = $"{mean:0.####} мс";
+            ComplexityMetric.Text = algorithm is StrassenMultiplication ? "O(N^2.81)" : "O(N²·M)";
+            ComplexityNote.Text = "теоретическая сложность (N × M)";
+            PointsMetric.Text = _grid3d.Count.ToString(CultureInfo.CurrentCulture);
+            PointsNote.Text = "ячеек сетки N × M";
+            return;
+        }
+
+        var comparing = _comparison.Count > 0;
+        var meanMain = _points.Average(point => point.Value);
+        string Fmt(double v) => _usesSteps ? v.ToString("N0", CultureInfo.CurrentCulture) : v.ToString("0.####", CultureInfo.CurrentCulture);
+
         if (!comparing)
         {
-            MeanMetric.Text = _usesSteps ? $"{mean:N0} оп." : $"{mean:0.####} мс";
+            MeanMetric.Text = _usesSteps ? $"{meanMain:N0} оп." : $"{meanMain:0.####} мс";
             ComplexityMetric.Text = $"O({ComplexityShortName(algorithm.TheoreticalComplexity)})";
             ComplexityNote.Text = "теоретическая сложность алгоритма";
         }
         else
         {
-            var meanB = _pointsB.Average(point => point.Value);
-            string Fmt(double v) => _usesSteps ? v.ToString("N0", CultureInfo.CurrentCulture) : v.ToString("0.####", CultureInfo.CurrentCulture);
-            MeanMetric.Text = $"{Fmt(mean)} / {Fmt(meanB)}{(_usesSteps ? " оп." : " мс")}";
-            ComplexityMetric.Text = $"O({ComplexityShortName(algorithm.TheoreticalComplexity)}) / O({ComplexityShortName(second!.TheoreticalComplexity)})";
-            ComplexityNote.Text = "теоретическая сложность A / B";
+            var names = new[] { algorithm }.Concat(_comparison.Select(c => c.Algorithm)).Take(3);
+            MeanMetric.Text = $"{Fmt(meanMain)} / {string.Join(" / ", _comparison.Take(2).Select(c => Fmt(c.Points.Average(p => p.Value))))}{(_usesSteps ? " оп." : " мс")}";
+            ComplexityMetric.Text = string.Join(" / ", names.Select(a => $"O({ComplexityShortName(a.TheoreticalComplexity)})"))
+                                   + (_comparison.Count > 2 ? " / …" : string.Empty);
+            ComplexityNote.Text = "теоретическая сложность по сериям";
         }
         PointsMetric.Text = _points.Count.ToString(CultureInfo.CurrentCulture);
         PointsNote.Text = $"по {_lastRunCount} запуск(а/ов) на точку";
@@ -550,10 +861,12 @@ public partial class MainWindow : Window
         LegendPanel.Children.Clear();
 
         var first = _currentAlgorithmRef ?? SelectedAlgorithm;
-        AddLegendItem(first?.Name ?? "Эксперимент", ExperimentBrush, dashed: false);
-        if (_pointsB.Count > 0 && _algorithmB is not null)
-            AddLegendItem(_algorithmB.Name, ExperimentBrushB, dashed: false);
-        AddLegendItem("Аппроксимация", TextBrush, dashed: true);
+        if (first is not null)
+            AddLegendItem(first.Name, ExperimentBrush, dashed: false);
+        foreach (var series in _comparison)
+            AddLegendItem(series.Algorithm.Name, series.Brush, dashed: false);
+        if (_grid3d.Count == 0)
+            AddLegendItem("Аппроксимация", TextBrush, dashed: true);
     }
 
     private void AddLegendItem(string name, Brush brush, bool dashed)
@@ -586,78 +899,75 @@ public partial class MainWindow : Window
         LegendPanel.Children.Add(item);
     }
 
-    private void CompareCheck_Changed(object sender, RoutedEventArgs e)
-    {
-        if (CompareCombo is not null)
-            CompareCombo.Visibility = CompareCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private int _lastRunCount = 3;
+    // ---------- Отрисовка ----------
 
     private void RedrawChart()
     {
+        if (_grid3d.Count > 0)
+        {
+            Draw3DChart();
+            return;
+        }
         if (_points.Count == 0 || PlotCanvas.ActualWidth < 150 || PlotCanvas.ActualHeight < 130)
             return;
 
         PlotCanvas.Children.Clear();
         var width = PlotCanvas.ActualWidth;
         var height = PlotCanvas.ActualHeight;
-        const double left = 76;
+        const double left = 96;
         const double right = 24;
         const double top = 29;
-        const double bottom = 49;
+        const double bottom = 52;
         var plotWidth = Math.Max(1, width - left - right);
         var plotHeight = Math.Max(1, height - top - bottom);
         var minX = _points.Min(point => point.N);
-        var maxX = Math.Max(_points.Max(point => point.N), _pointsB.Count == 0 ? 0 : _pointsB.Max(point => point.N));
+        var maxX = Math.Max(_points.Max(point => point.N), _comparison.Count == 0 ? 0 : _comparison.Max(c => c.Points.Count == 0 ? 0 : c.Points.Max(p => p.N)));
         if (maxX == minX)
             maxX = minX + 1;
 
-        // Оси с «красивыми» делениями, кратными 5 (0.05, 0.25, 25, 250, 2500…)
+        // Оси с «красивыми» делениями, кратными 5
         var rawMaxY = Math.Max(
-            _points.Max(point => point.Value),
+            _points.Count == 0 ? 0 : _points.Max(point => point.Value),
             Math.Max(
                 _approximation.Count == 0 ? 0 : _approximation.Max(point => point.Value),
-                Math.Max(
-                    _pointsB.Count == 0 ? 0 : _pointsB.Max(point => point.Value),
-                    _approximationB.Count == 0 ? 0 : _approximationB.Max(point => point.Value))));
+                _comparison.Count == 0 ? 0 : _comparison.Max(c => c.Points.Count == 0 || c.Approximation.Count == 0
+                    ? 0
+                    : Math.Max(c.Points.Max(p => p.Value), c.Approximation.Max(p => p.Value)))));
         var (maxY, yStep, yDecimals) = NiceScale(rawMaxY, divisions: 8);
         var (niceMaxX, xStep, _) = NiceScale(maxX, divisions: 5);
         var domainX = Math.Max(1, niceMaxX - minX);
 
-        AddText(_usesSteps ? "Количество операций" : "Время выполнения · мс", 4, 5, 180, TextBrush);
+        AddText(_usesSteps ? "Количество операций" : "Время выполнения · мс", 4, 5, 220, TextBrush, fontSize: 12);
 
-        // Горизонтальная сетка и подписи Y по подобранным делениям
         for (var v = 0d; v <= maxY + yStep * 1e-6; v += yStep)
         {
             var y = top + plotHeight * (1 - v / maxY);
             AddLine(left, y, width - right, y, GridBrush, 1);
-            AddText(FormatTick(v, yDecimals), 0, y - 8, 68, TextBrush, TextAlignment.Right);
+            AddText(FormatTick(v, yDecimals), 0, y - 9, 86, TickBrush, TextAlignment.Right, fontSize: 13);
         }
 
-        // Вертикальная сетка и подписи X по подобранным делениям
         var firstX = Math.Ceiling(minX / xStep - 1e-9) * xStep;
         for (var v = firstX; v <= niceMaxX + xStep * 1e-6; v += xStep)
         {
             var x = left + (v - minX) / domainX * plotWidth;
             AddLine(x, top, x, top + plotHeight, GridBrush, 1);
-            AddText(FormatTick(v, 0), x - 28, top + plotHeight + 8, 56, TextBrush, TextAlignment.Center);
+            AddText(FormatTick(v, 0), x - 36, top + plotHeight + 8, 72, TickBrush, TextAlignment.Center, fontSize: 13);
         }
 
         AddLine(left, top, left, top + plotHeight, AxisBrush, 1.2);
         AddLine(left, top + plotHeight, width - right, top + plotHeight, AxisBrush, 1.2);
-        AddText("Размер входных данных · N", width - right - 165, height - 22, 165, TextBrush, TextAlignment.Right);
+        AddText("Размер входных данных · N", width - right - 190, height - 24, 190, TextBrush, TextAlignment.Right, fontSize: 12);
 
         Point Map(PlotPoint point) => new(
             left + (point.N - minX) / domainX * plotWidth,
             top + plotHeight - point.Value / maxY * plotHeight);
 
         DrawSeries(_points, _approximation, Map, ExperimentBrush, AreaBrush, null);
-        if (_pointsB.Count > 0)
-            DrawSeries(_pointsB, _approximationB, Map, ExperimentBrushB, AreaBrushB, _algorithmB?.Name);
+        foreach (var series in _comparison)
+            DrawSeries(series.Points, series.Approximation, Map, series.Brush, series.AreaBrush, series.Algorithm.Name);
     }
 
-    /// <summary>Рисует одну серию: заливка, линия, пунктир аппроксимации и точки.</summary>
+    /// <summary>Рисует одну 2D-серию: заливка, линия, пунктир аппроксимации и точки.</summary>
     private void DrawSeries(
         List<PlotPoint> points, List<PlotPoint> approximation, Func<PlotPoint, Point> map,
         Brush lineBrush, Brush areaBrush, string? seriesName)
@@ -670,8 +980,8 @@ public partial class MainWindow : Window
 
         var areaPoints = points.Select(map).ToList();
         var lastX = areaPoints[^1].X;
-        areaPoints.Add(new Point(lastX, PlotCanvas.ActualHeight - 49));
-        areaPoints.Add(new Point(areaPoints[0].X, PlotCanvas.ActualHeight - 49));
+        areaPoints.Add(new Point(lastX, PlotCanvas.ActualHeight - 52));
+        areaPoints.Add(new Point(areaPoints[0].X, PlotCanvas.ActualHeight - 52));
         var area = new Polygon
         {
             Points = new PointCollection(areaPoints),
@@ -694,7 +1004,7 @@ public partial class MainWindow : Window
                 Fill = lineBrush,
                 Stroke = new SolidColorBrush(Color.FromRgb(17, 24, 42)),
                 StrokeThickness = 1.2,
-                ToolTip = $"{title}N = {point.N:N0}{Environment.NewLine}{(_usesSteps ? "Операции" : "Время")}: {(_usesSteps ? point.Value.ToString("N0", CultureInfo.CurrentCulture) : point.Value.ToString("0.####", CultureInfo.CurrentCulture) + " мс")}"
+                ToolTip = $"{title}N = {point.N:N0}{(point.FromCache ? " · из кэша БД" : string.Empty)}{Environment.NewLine}{(_usesSteps ? "Операции" : "Время")}: {(_usesSteps ? point.Value.ToString("N0", CultureInfo.CurrentCulture) : point.Value.ToString("0.####", CultureInfo.CurrentCulture) + " мс")}"
             };
             Canvas.SetLeft(dot, position.X - 3.5);
             Canvas.SetTop(dot, position.Y - 3.5);
@@ -703,17 +1013,180 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>Изометрическая 3D-поверхность время(N, M) + диагональные кривые сравнения.</summary>
+    private void Draw3DChart()
+    {
+        if (PlotCanvas.ActualWidth < 200 || PlotCanvas.ActualHeight < 160)
+            return;
+
+        PlotCanvas.Children.Clear();
+        var width = PlotCanvas.ActualWidth;
+        var height = PlotCanvas.ActualHeight;
+        const double left = 96;
+        const double right = 36;
+        const double top = 46;
+        const double bottom = 64;
+        var plotW = Math.Max(1, width - left - right);
+        var plotH = Math.Max(1, height - top - bottom);
+
+        var ns = _grid3d.Select(p => p.N).Distinct().OrderBy(v => v).ToList();
+        var ms = _grid3d.Select(p => p.M).Distinct().OrderBy(v => v).ToList();
+        var nMin = ns[0];
+        var nMax = ns[^1];
+        var mMin = ms[0];
+        var mMax = ms[^1];
+        var nRange = Math.Max(1, nMax - nMin);
+        var mRange = Math.Max(1, mMax - mMin);
+        var zRaw = _grid3d.Max(p => p.Value);
+        var (zMax, zStep, zDecimals) = NiceScale(zRaw <= 0 ? 1 : zRaw, divisions: 5);
+
+        // Изометрия: ось N — вправо-вниз, ось M — влево-вниз, время — вверх
+        var scaleFit = Math.Min(plotW / 0.96, plotH / 0.9);
+        var sx = scaleFit * 0.58;
+        var sy = scaleFit * 0.32;
+        var sz = Math.Max(plotH * 0.25, plotH - (sx + sy) * 0.5);
+        Point Origin;
+        {
+            var ox = left + sy * 0.866 + 8;
+            var oy = top + 6;
+            Origin = new Point(ox, oy);
+        }
+
+        Point Project(double n, double m, double z) => new(
+            Origin.X + (n - nMin) / nRange * sx * 0.866 - (m - mMin) / mRange * sy * 0.866,
+            Origin.Y + (n - nMin) / nRange * sx * 0.5 + (m - mMin) / mRange * sy * 0.5 - z / zMax * sz);
+
+        // Пол сетки: линии по N и M на нулевой высоте
+        var (niceN, nTickStep, _) = NiceScale(nMax, divisions: 4);
+        var (niceM, mTickStep, _) = NiceScale(mMax, divisions: 4);
+        for (var v = (double)mMin; v <= mMax + mTickStep * 1e-6; v += mTickStep)
+            AddLine(Project(nMin, v, 0), Project(nMax, v, 0), GridBrush, 1);
+        for (var v = (double)nMin; v <= nMax + nTickStep * 1e-6; v += nTickStep)
+            AddLine(Project(v, mMin, 0), Project(v, mMax, 0), GridBrush, 1);
+
+        // Оси
+        AddLine(Project(nMin, mMin, 0), Project(nMax, mMin, 0), AxisBrush, 1.4);
+        AddLine(Project(nMin, mMin, 0), Project(nMin, mMax, 0), AxisBrush, 1.4);
+        AddLine(Project(nMin, mMin, 0), Project(nMin, mMin, zMax), AxisBrush, 1.4);
+
+        // Подписи: N вдоль правого ребра, M вдоль левого, время — по вертикали
+        for (var v = Math.Ceiling(nMin / nTickStep - 1e-9) * nTickStep; v <= nMax + nTickStep * 1e-6; v += nTickStep)
+        {
+            var p = Project(v, mMin, 0);
+            AddText(FormatTick(v, 0), p.X - 36, p.Y + 8, 72, TickBrush, TextAlignment.Center, fontSize: 13);
+        }
+        for (var v = Math.Ceiling(mMin / mTickStep - 1e-9) * mTickStep; v <= mMax + mTickStep * 1e-6; v += mTickStep)
+        {
+            var p = Project(nMin, v, 0);
+            AddText(FormatTick(v, 0), p.X - 60, p.Y + 8, 56, TickBrush, TextAlignment.Right, fontSize: 13);
+        }
+        for (var v = zStep; v <= zMax + zStep * 1e-6; v += zStep)
+        {
+            var p = Project(nMin, mMin, v);
+            AddText(FormatTick(v, zDecimals), p.X - 78, p.Y - 9, 72, TickBrush, TextAlignment.Right, fontSize: 13);
+        }
+        AddText("N", Project(nMax, mMin, 0).X - 10, Project(nMax, mMin, 0).Y + 26, 60, TextBrush, fontSize: 13);
+        AddText("M", Project(nMin, mMax, 0).X - 70, Project(nMin, mMax, 0).Y + 26, 60, TextBrush, TextAlignment.Right, fontSize: 13);
+        AddText("мс", Project(nMin, mMin, zMax).X - 78, Project(nMin, mMin, zMax).Y - 30, 60, TextBrush, fontSize: 12);
+        AddText("Поверхность времени · N × M", 4, 5, 260, TextBrush, fontSize: 12);
+
+        // Поверхность: квадраты от дальнего угла к ближнему, цвет по высоте
+        var lookup = new Dictionary<(int, int), double>();
+        foreach (var cell in _grid3d)
+            lookup[(cell.N, cell.M)] = cell.Value;
+
+        double Z(int n, int m) => lookup.TryGetValue((n, m), out var v) ? v : 0;
+        for (var i = 0; i < ns.Count - 1; i++)
+        {
+            for (var j = 0; j < ms.Count - 1; j++)
+            {
+                var n0 = ns[i];
+                var n1 = ns[i + 1];
+                var m0 = ms[j];
+                var m1 = ms[j + 1];
+                var quad = new[]
+                {
+                    Project(n0, m0, Z(n0, m0)),
+                    Project(n1, m0, Z(n1, m0)),
+                    Project(n1, m1, Z(n1, m1)),
+                    Project(n0, m1, Z(n0, m1))
+                };
+                var t = Math.Clamp(Z((n0 + n1) / 2, (m0 + m1) / 2) / zMax, 0, 1);
+                var polygon = new Polygon
+                {
+                    Points = new PointCollection(quad),
+                    Fill = new SolidColorBrush(LerpColor(SurfaceLow.Color, SurfaceHigh.Color, t)),
+                    Stroke = new SolidColorBrush(Color.FromRgb(11, 16, 32)),
+                    StrokeThickness = 0.7
+                };
+                polygon.ToolTip = $"N = {n0}–{n1}, M = {m0}–{m1}{Environment.NewLine}Время: {Z(n1, m1):0.####} мс";
+                Panel.SetZIndex(polygon, 1);
+                PlotCanvas.Children.Add(polygon);
+            }
+        }
+
+        // Кривые сравнения — по диагонали M = N
+        foreach (var series in _comparison)
+        {
+            var diagPoints = series.Points
+                .Where(p => p.N >= nMin && p.N <= nMax)
+                .Select(p => Project(p.N, p.N, p.Value))
+                .ToList();
+            if (diagPoints.Count > 1)
+                AddPolyline(diagPoints, series.Brush, 2.6);
+
+            foreach (var point in series.Points)
+            {
+                if (point.N < nMin || point.N > nMax)
+                    continue;
+                var position = Project(point.N, point.N, point.Value);
+                var dot = new Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Fill = series.Brush,
+                    Stroke = new SolidColorBrush(Color.FromRgb(11, 16, 32)),
+                    StrokeThickness = 1,
+                    ToolTip = $"{series.Algorithm.Name}{Environment.NewLine}N = M = {point.N:N0}{Environment.NewLine}{point.Value:0.####} мс"
+                };
+                Canvas.SetLeft(dot, position.X - 3);
+                Canvas.SetTop(dot, position.Y - 3);
+                Panel.SetZIndex(dot, 4);
+                PlotCanvas.Children.Add(dot);
+            }
+        }
+    }
+
+    private static Color LerpColor(Color from, Color to, double t)
+    {
+        t = Math.Clamp(t, 0, 1);
+        return Color.FromRgb(
+            (byte)(from.R + (to.R - from.R) * t),
+            (byte)(from.G + (to.G - from.G) * t),
+            (byte)(from.B + (to.B - from.B) * t));
+    }
+
     private void DrawEmptyChartFrame()
     {
         if (PlotCanvas.ActualWidth < 150 || PlotCanvas.ActualHeight < 130)
             return;
+        if (Is3DMode)
+        {
+            // Пустой 3D-каркас: подсказка, что для матриц рисуется поверхность
+            PlotCanvas.Children.Clear();
+            AddText("Поверхность времени · N × M", 4, 5, 260, TextBrush, fontSize: 12);
+            AddText("Выберите параметры и запустите серию — появится 3D-поверхность",
+                PlotCanvas.ActualWidth / 2 - 190, PlotCanvas.ActualHeight / 2 - 10, 380, TextBrush, TextAlignment.Center, fontSize: 12);
+            return;
+        }
+
         PlotCanvas.Children.Clear();
         var width = PlotCanvas.ActualWidth;
         var height = PlotCanvas.ActualHeight;
-        const double left = 76;
+        const double left = 96;
         const double right = 24;
         const double top = 29;
-        const double bottom = 49;
+        const double bottom = 52;
         for (var i = 0; i <= 5; i++)
         {
             var y = top + (height - top - bottom) * i / 5;
@@ -721,8 +1194,8 @@ public partial class MainWindow : Window
         }
         AddLine(left, top, left, height - bottom, AxisBrush, 1.2);
         AddLine(left, height - bottom, width - right, height - bottom, AxisBrush, 1.2);
-        AddText(_usesSteps ? "Количество операций" : "Время выполнения · мс", 4, 5, 180, TextBrush);
-        AddText("Размер входных данных · N", width - right - 165, height - 22, 165, TextBrush, TextAlignment.Right);
+        AddText(_usesSteps ? "Количество операций" : "Время выполнения · мс", 4, 5, 220, TextBrush, fontSize: 12);
+        AddText("Размер входных данных · N", width - right - 190, height - 24, 190, TextBrush, TextAlignment.Right, fontSize: 12);
     }
 
     private void AddPolyline(IEnumerable<Point> points, Brush brush, double thickness, bool dashed = false, double opacity = 1)
@@ -742,20 +1215,25 @@ public partial class MainWindow : Window
         PlotCanvas.Children.Add(polyline);
     }
 
+    private void AddLine(Point from, Point to, Brush brush, double thickness) =>
+        AddLine(from.X, from.Y, to.X, to.Y, brush, thickness);
+
     private void AddLine(double x1, double y1, double x2, double y2, Brush brush, double thickness)
     {
         var line = new Line { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Stroke = brush, StrokeThickness = thickness };
         PlotCanvas.Children.Add(line);
     }
 
-    private void AddText(string text, double x, double y, double width, Brush brush, TextAlignment alignment = TextAlignment.Left)
+    private void AddText(string text, double x, double y, double width, Brush brush,
+        TextAlignment alignment = TextAlignment.Left, double fontSize = 10)
     {
         var label = new TextBlock
         {
             Text = text,
             Width = width,
             Foreground = brush,
-            FontSize = 10,
+            FontSize = fontSize,
+            FontWeight = fontSize >= 13 ? FontWeights.SemiBold : FontWeights.Normal,
             TextAlignment = alignment,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
@@ -768,7 +1246,8 @@ public partial class MainWindow : Window
 
     private async void SaveDbButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_points.Count == 0 || _currentRunResults.Count == 0)
+        var hasSeries = _grid3d.Count > 0 ? _currentRunResults.Count > 0 : _points.Count > 0 && _currentRunResults.Count > 0;
+        if (!hasSeries)
         {
             StatusText.Text = "Нет результатов для сохранения — сначала постройте график.";
             return;
@@ -779,9 +1258,10 @@ public partial class MainWindow : Window
         {
             await UiDatabase.EnsureInitializedAsync();
             var db = UiDatabase.CreateDatabaseService();
+            var savedIds = new List<int>();
 
             var entity = _currentEntity ?? await UiDatabase.ResolveAlgorithmAsync(_currentAlgorithmRef!);
-            var experiment = new Experiment
+            var mainExperiment = new Experiment
             {
                 AlgorithmId = entity.Id,
                 Algorithm = entity,
@@ -791,30 +1271,29 @@ public partial class MainWindow : Window
                 RunsCount = _currentRuns,
                 DataType = _currentDataType
             };
+            await db.SaveExperimentAsync(mainExperiment, _currentRunResults);
+            savedIds.Add(mainExperiment.Id);
 
-            await db.SaveExperimentAsync(experiment, _currentRunResults);
-
-            // В режиме сравнения сохраняем и вторую серию
-            if (_pointsB.Count > 0 && _currentRunResultsB.Count > 0 && _algorithmB is not null)
+            foreach (var series in _comparison.Where(s => s.Results.Count > 0))
             {
-                var entityB = await UiDatabase.ResolveAlgorithmAsync(_algorithmB);
-                var experimentB = new Experiment
+                var seriesEntity = await UiDatabase.ResolveAlgorithmAsync(series.Algorithm);
+                var seriesExperiment = new Experiment
                 {
-                    AlgorithmId = entityB.Id,
-                    Algorithm = entityB,
+                    AlgorithmId = seriesEntity.Id,
+                    Algorithm = seriesEntity,
                     Date = DateTime.UtcNow,
                     N_max = _currentMaxN,
                     Step = _currentStep,
                     RunsCount = _currentRuns,
                     DataType = _currentDataType
                 };
-                await db.SaveExperimentAsync(experimentB, _currentRunResultsB);
-                StatusText.Text = $"Сохранено в БД · эксперименты #{experiment.Id} и #{experimentB.Id}";
+                await db.SaveExperimentAsync(seriesExperiment, series.Results);
+                savedIds.Add(seriesExperiment.Id);
             }
-            else
-            {
-                StatusText.Text = $"Сохранено в БД · эксперимент #{experiment.Id} · {_currentRunResults.Count} замеров";
-            }
+
+            StatusText.Text = savedIds.Count == 1
+                ? $"Сохранено в БД · эксперимент #{savedIds[0]} · {_currentRunResults.Count} замеров"
+                : $"Сохранено в БД · эксперименты {string.Join(", ", savedIds.Select(id => "#" + id))}";
         }
         catch (Exception ex)
         {
@@ -822,7 +1301,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SaveDbButton.IsEnabled = _points.Count > 0;
+            SaveDbButton.IsEnabled = true;
         }
     }
 
@@ -866,6 +1345,37 @@ public partial class MainWindow : Window
                 return;
             }
 
+            ResetComparison();
+            _currentAlgorithmRef = algorithm;
+            _currentEntity = entity;
+            _currentMaxN = selected.N_max;
+            _currentStep = selected.Step;
+            _currentRuns = selected.RunsCount;
+            _currentRuns = selected.RunsCount;
+            _currentDataType = selected.DataType;
+            _lastRunCount = selected.RunsCount;
+
+            if (entity.SupportsMatrixDimensions && results.All(r => r.M.HasValue))
+            {
+                // 3D-эксперимент: собираем поверхность из ячеек (N, M)
+                _grid3d = results
+                    .GroupBy(r => (N: r.N, M: r.M!.Value))
+                    .OrderBy(g => g.Key.N).ThenBy(g => g.Key.M)
+                    .Select(g => new GridPoint(g.Key.N, g.Key.M, g.Average(r => r.TimeMs)))
+                    .ToList();
+                _currentRunResults = results;
+                _usesSteps = false;
+                EmptyState.Visibility = Visibility.Collapsed;
+                SaveDbButton.IsEnabled = true;
+                UpdateSummary(algorithm);
+                UpdateLegend();
+                RedrawChart();
+                ChartSubtitle.Text = $"{algorithm.Name} · 3D из БД · эксперимент #{selected.Id} от {selected.Date.ToLocalTime():dd.MM.yyyy HH:mm}";
+                StatusText.Text = $"Загружено из БД · {_grid3d.Count} ячеек сетки";
+                RunProgress.Value = 0;
+                return;
+            }
+
             var usesSteps = results.Any(r => r.Steps > 0);
             var points = results
                 .GroupBy(r => r.N)
@@ -874,17 +1384,10 @@ public partial class MainWindow : Window
                 .ToList();
 
             _usesSteps = usesSteps;
-            _lastRunCount = selected.RunsCount;
             _points = points;
             _approximation = FitExpectedCurve(points, entity.TheoreticalComplexity);
             _currentRunResults = results;
-            _currentAlgorithmRef = algorithm;
-            _currentEntity = entity;
-            _currentMaxN = selected.N_max;
-            _currentStep = selected.Step;
-            _currentRuns = selected.RunsCount;
-            _currentDataType = selected.DataType;
-            ResetComparison();
+            _grid3d.Clear();
 
             EmptyState.Visibility = Visibility.Collapsed;
             SaveDbButton.IsEnabled = true;
@@ -959,6 +1462,8 @@ public partial class MainWindow : Window
     /// <summary>Отображает серию из элемента очереди на графике и делает её текущей (для сохранения в БД).</summary>
     private void ViewSeries(QueueItem item)
     {
+        ResetComparison();
+        _grid3d.Clear();
         _points = item.Points!;
         _currentRunResults = item.RunResults!;
         _approximation = item.Approximation!;
@@ -970,7 +1475,6 @@ public partial class MainWindow : Window
         _currentStep = item.Step;
         _currentRuns = item.Runs;
         _currentDataType = item.DataType;
-        ResetComparison();
 
         EmptyState.Visibility = Visibility.Collapsed;
         SaveDbButton.IsEnabled = true;
@@ -996,12 +1500,13 @@ public partial class MainWindow : Window
         SaveDbButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
 
-        var db = UiDatabase.CreateDatabaseService();
-        var autoSave = QueueSaveCheckBox.IsChecked == true;
+        var useCache = UseCacheCheck.IsChecked == true;
         var token = _queueCancellation.Token;
 
         try
         {
+            await UiDatabase.EnsureInitializedAsync();
+
             foreach (var item in _queueItems.Where(i => !i.Completed).ToList())
             {
                 item.MarkRunning();
@@ -1011,8 +1516,9 @@ public partial class MainWindow : Window
 
                 try
                 {
-                    // Автоподбор масштаба под ~5–6 секунд для каждой серии очереди
                     var (fitN, fitStep, _) = AutoFitSeries(item.Algorithm, item.MaxN, item.Step, item.Runs, item.DataType);
+                    var entity = await UiDatabase.ResolveAlgorithmAsync(item.Algorithm);
+                    var sizes = MakeSizes(fitN, fitStep);
 
                     var progress = new Progress<(int Completed, int Total, int CurrentN)>(p =>
                     {
@@ -1020,18 +1526,18 @@ public partial class MainWindow : Window
                         RunProgress.Value = (double)p.Completed / p.Total * 100;
                     });
 
-                    var (points, runResults) = await Task.Run(
-                        () => RunMeasurements(item.Algorithm, MakeSizes(fitN, fitStep), item.Runs, item.DataType, token, progress),
+                    var (points, runResults, cached) = await Task.Run(
+                        () => RunSeries2DAsync(item.Algorithm, entity, sizes, item.Runs, item.DataType, useCache, token, progress),
                         token);
 
                     item.Points = points;
                     item.RunResults = runResults;
+                    item.CachedPoints = cached;
                     item.Approximation = FitExpectedCurve(points, item.Algorithm.TheoreticalComplexity);
                     item.Completed = true;
 
-                    if (autoSave)
+                    if (QueueSaveCheckBox.IsChecked == true)
                     {
-                        var entity = await UiDatabase.ResolveAlgorithmAsync(item.Algorithm);
                         var experiment = new Experiment
                         {
                             AlgorithmId = entity.Id,
@@ -1042,7 +1548,7 @@ public partial class MainWindow : Window
                             RunsCount = item.Runs,
                             DataType = item.DataType
                         };
-                        await db.SaveExperimentAsync(experiment, runResults);
+                        await UiDatabase.CreateDatabaseService().SaveExperimentAsync(experiment, runResults);
                         item.SavedEntity = entity;
                         item.MarkDoneSaved(experiment.Id);
                     }
@@ -1085,12 +1591,59 @@ public partial class MainWindow : Window
         }
     }
 
+    // ---------- Интерфейс сравнения ----------
+
+    private void CompareCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (PickCompareButton is not null)
+            PickCompareButton.Visibility = CompareCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async void PickCompareButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new CompareSelectDialog(_algorithms, _compareSelection.Select(a => a.Name), SelectedAlgorithm?.Name ?? string.Empty) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            _compareSelection = dialog.Selected;
+            PickCompareButton.Content = $"Выбрано для сравнения: {_compareSelection.Count}";
+            if (_compareSelection.Count > 0)
+                QueueStatusText.Text = $"К сравнению выбрано: {string.Join(", ", _compareSelection.Select(a => a.Name))}";
+        }
+        await Task.CompletedTask;
+    }
+
+    /// <summary>Сбрасывает серии сравнения.</summary>
+    private void ResetComparison()
+    {
+        _comparison.Clear();
+        if (LegendPanel is not null)
+            UpdateLegend();
+    }
+
     private DataType GetSelectedDataType() => DataTypeCombo.SelectedIndex switch
     {
         1 => DataType.Sorted,
         2 => DataType.Reversed,
         _ => DataType.Random
     };
+
+    // ---------- Вспомогательные ----------
+
+    private static int GetMaximumAllowedN(IAlgorithm algorithm) => algorithm switch
+    {
+        BubbleSort => 50000,
+        MatrixMultiplication or StrassenMultiplication => 2048,
+        LevenshteinAlgorithm => 30000,
+        PowerRecursive => 20000,
+        PowerIterative => 1000000000,
+        PowerBinary => 1000000000,
+        PolynomialNaive => 50000,
+        _ => 20000000
+    };
+
+    /// <summary>Размер входа для пилотного замера при подборе масштаба.</summary>
+    private static int PilotSize(IAlgorithm algorithm) =>
+        algorithm.SupportsMatrixDimensions ? 128 : 1000;
 
     /// <summary>Степень двойки, не меньше указанного размера (нужно для Штрассена).</summary>
     private static int NextPowerOfTwo(int n)
@@ -1101,21 +1654,18 @@ public partial class MainWindow : Window
         return p;
     }
 
-    private static int GetMaximumAllowedN(IAlgorithm algorithm) => algorithm switch
-    {
-        BubbleSort => 20000,
-        MatrixMultiplication or StrassenMultiplication => 1024,
-        LevenshteinAlgorithm => 10000,
-        PowerRecursive => 10000,
-        PowerIterative => 10000000,
-        PowerBinary => 1000000,
-        PolynomialNaive => 20000,
-        _ => 5000000
-    };
+    /// <summary>Палитра цветов серий сравнения (основная серия — бирюзовая).</summary>
+    public static Brush[] ComparisonPalette() =>
+    [
+        new SolidColorBrush(Color.FromRgb(177, 140, 255)),
+        new SolidColorBrush(Color.FromRgb(255, 143, 120)),
+        new SolidColorBrush(Color.FromRgb(255, 209, 102)),
+        new SolidColorBrush(Color.FromRgb(111, 183, 255)),
+        new SolidColorBrush(Color.FromRgb(255, 143, 212)),
+        new SolidColorBrush(Color.FromRgb(140, 233, 154))
+    ];
 
-    /// <summary>Размер входа для пилотного замера при подборе масштаба.</summary>
-    private static int PilotSize(IAlgorithm algorithm) =>
-        algorithm is MatrixMultiplication or StrassenMultiplication ? 128 : 1000;
+    public static string ComplexityShortNamePublic(ComplexityType complexity) => ComplexityShortName(complexity);
 
     /// <summary>Компактный формат чисел для подписей осей: 1500 → «1,5K», 2 000 000 → «2M».</summary>
     private static string CompactNumber(double value)
@@ -1129,8 +1679,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Деления оси, кратные 5: шаг выбирается из набора {0.005, 0.025, 0.05, 0.1, 0.25, 0.5, 2.5, 5, 10, 25, 50, …},
-    /// максимум округляется вверх до кратного шагу значения. Подписи всегда делятся на 5.
+    /// Деления оси, кратные 5: шаг из набора {0.005, 0.025, 0.05, 0.1, 0.25, 0.5, 2.5, 5, 10, 25, 50, …},
+    /// максимум округляется вверх до кратного шагу значения.
     /// </summary>
     private static (double Max, double Step, int Decimals) NiceScale(double rawMax, int divisions)
     {
@@ -1187,7 +1737,24 @@ public partial class MainWindow : Window
         _ => "N"
     };
 
-    public readonly record struct PlotPoint(int N, double Value);
+    public readonly record struct PlotPoint(int N, double Value, bool FromCache = false);
+
+    /// <summary>Ячейка 3D-сетки: время умножения A(n×m) × B(m×n).</summary>
+    public readonly record struct GridPoint(int N, int M, double Value, bool FromCache = false);
+
+    /// <summary>Серия сравнения на общем поле.</summary>
+    public sealed class ComparisonSeries
+    {
+        public required IAlgorithm Algorithm { get; init; }
+        public required Brush Brush { get; init; }
+        public List<PlotPoint> Points { get; set; } = [];
+        public List<PlotPoint> Approximation { get; set; } = [];
+        public List<ExperimentResult> Results { get; set; } = [];
+
+        public Brush AreaBrush => Brush is SolidColorBrush scb
+            ? new SolidColorBrush(Color.FromArgb(30, scb.Color.R, scb.Color.G, scb.Color.B))
+            : Brushes.Transparent;
+    }
 
     /// <summary>Элемент очереди: одна серия экспериментов со своим статусом выполнения.</summary>
     public sealed class QueueItem : INotifyPropertyChanged
@@ -1219,6 +1786,7 @@ public partial class MainWindow : Window
         public List<PlotPoint>? Approximation { get; set; }
         public List<ExperimentResult>? RunResults { get; set; }
         public Algorithm? SavedEntity { get; set; }
+        public int CachedPoints { get; set; }
         public bool Completed { get; set; }
 
         private string _statusText = "Ожидает";
@@ -1247,4 +1815,6 @@ public partial class MainWindow : Window
         private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
+
+    private int _lastRunCount = 3;
 }
