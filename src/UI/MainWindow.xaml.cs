@@ -6,7 +6,9 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Media3D;
 using System.Windows.Shapes;
 using Algorithms.DataGenerators;
 using Algorithms.Helpers;
@@ -394,7 +396,9 @@ public partial class MainWindow : Window
 
     private void PlotCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (_points.Count > 0 || _grid3d.Count > 0)
+        if (PlotViewport.Visibility == Visibility.Visible)
+            return; // 3D-вьюпорт масштабируется сам
+        if (_points.Count > 0)
             RedrawChart();
         else
             DrawEmptyChartFrame();
@@ -917,9 +921,20 @@ public partial class MainWindow : Window
     {
         if (_grid3d.Count > 0)
         {
-            Draw3DChart();
+            // 3D: настоящий вьюпорт с Z-буфером и орбитальной камерой
+            PlotCanvas.Visibility = Visibility.Collapsed;
+            EmptyState.Visibility = Visibility.Collapsed;
+            PlotViewport.Visibility = Visibility.Visible;
+            SurfaceChart3D.Render(SceneRoot, PlotViewport, _grid3d, _comparison, _currentRuns);
             return;
         }
+
+        PlotViewport.Visibility = Visibility.Collapsed;
+        RedrawChart2D();
+    }
+
+    private void RedrawChart2D()
+    {
         if (_points.Count == 0 || PlotCanvas.ActualWidth < 150 || PlotCanvas.ActualHeight < 130)
             return;
 
@@ -1025,256 +1040,12 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Изометрическая 3D-поверхность время(N, M) + диагональные кривые сравнения.</summary>
-    private void Draw3DChart()
-    {
-        if (PlotCanvas.ActualWidth < 200 || PlotCanvas.ActualHeight < 160)
-            return;
-
-        PlotCanvas.Children.Clear();
-        var width = PlotCanvas.ActualWidth;
-        var height = PlotCanvas.ActualHeight;
-        const double left = 96;
-        const double right = 36;
-        const double top = 46;
-        const double bottom = 64;
-        var plotW = Math.Max(1, width - left - right);
-        var plotH = Math.Max(1, height - top - bottom);
-
-        var ns = _grid3d.Select(p => p.N).Distinct().OrderBy(v => v).ToList();
-        var ms = _grid3d.Select(p => p.M).Distinct().OrderBy(v => v).ToList();
-        var nMin = ns[0];
-        var nMax = ns[^1];
-        var mMin = ms[0];
-        var mMax = ms[^1];
-        var nRange = Math.Max(1, nMax - nMin);
-        var mRange = Math.Max(1, mMax - mMin);
-        // Логарифмическая шкала времени: поверхность и кривые сравнения могут различаться
-        // на порядки (матрица 5 мс против Strassen 200 мс) — в логе виден рост всего
-        var curvesMax = _comparison.Count == 0
-            ? 0
-            : _comparison.Max(c => c.Points.Count == 0 ? 0 : c.Points.Where(p => p.N >= nMin && p.N <= nMax).Max(p => p.Value));
-        var curvesMin = _comparison.Count == 0
-            ? double.MaxValue
-            : _comparison.Min(c => c.Points.Count == 0 ? double.MaxValue : c.Points.Where(p => p.N >= nMin && p.N <= nMax).Min(p => p.Value));
-        var zRawMax = Math.Max(_grid3d.Max(p => p.Value), curvesMax);
-        var zRawMin = Math.Min(_grid3d.Min(p => p.Value), curvesMin);
-        var zLogMax = Math.Log10(Math.Max(zRawMax, 1e-3));
-        // Диапазон ограничен ~3,2 декады: иначе вырожденно мелкие ячейки (N = 1…) растягивают
-        // шкалу и рвут поверхность; ячейки ниже низа шкалы рисуются на полу, тултип показывает
-        // их реальное время
-        var zLogMin = Math.Max(Math.Log10(Math.Max(zRawMin * 0.5, 1e-4)), zLogMax - 3.2);
-        if (zLogMax - zLogMin < 0.6)
-            zLogMax = zLogMin + 0.6;
-        var zLogRange = zLogMax - zLogMin;
-        double ZFrac(double z) => Math.Clamp((Math.Log10(Math.Max(z, 1e-4)) - zLogMin) / zLogRange, 0, 1);
-
-        // Изометрия: ось N — вправо-вниз, ось M — влево-вниз, время — вверх.
-        // Размер пола ограничен высотой ящика, Origin опущен на высоту стенок —
-        // иначе стенки обрезаются верхом холста, а низ остаётся пустым
-        var s = Math.Min(plotW * 0.95 / 0.94, plotH * 0.50 / 0.30);
-        var sx = s * 0.62;
-        var sy = s * 0.38;
-        var sz = Math.Max(plotH * 0.50, plotH - 0.30 * s);
-        Point Origin;
-        {
-            var ox = left + (plotW - 0.94 * s) / 2 + 0.94 * sy;
-            var oy = top + sz + 12;
-            Origin = new Point(ox, oy);
-        }
-
-        // zFrac — положение по шкале времени: 0 — минимум, 1 — максимум (лог-шкала)
-        Point Project(double n, double m, double zFrac) => new(
-            Origin.X + (n - nMin) / nRange * sx * 0.94 - (m - mMin) / mRange * sy * 0.94,
-            Origin.Y + (n - nMin) / nRange * sx * 0.30 + (m - mMin) / mRange * sy * 0.30 - zFrac * sz);
-
-        // Классическая композиция 3D-осей: задние стенки, пол, ось времени на левой вершине,
-        // деления N и M — по передним рёбрам ромба
-        var (niceN, nTickStep, _) = NiceScale(nMax, divisions: 4);
-        var (niceM, mTickStep, _) = NiceScale(mMax, divisions: 4);
-        var backTop = Project(nMin, mMin, 0);          // дальний угол
-        var backRight = Project(nMax, mMin, 0);        // правый угол пола
-        var backLeft = Project(nMin, mMax, 0);         // левый угол пола (здесь ось времени)
-        var front = Project(nMax, mMax, 0);            // ближний угол
-        var leftTop = Project(nMin, mMax, 1);          // верх оси времени
-        var wallBrush = new SolidColorBrush(Color.FromArgb(70, 20, 30, 50));
-
-        // Задняя стенка вдоль M (плоскость n = nMin) и вдоль N (плоскость m = mMin)
-        var wallM = new Polygon
-        {
-            Points = new PointCollection(new[]
-            {
-                backTop, backLeft, leftTop, Project(nMin, mMin, 1)
-            }),
-            Fill = wallBrush,
-            StrokeThickness = 0
-        };
-        var wallN = new Polygon
-        {
-            Points = new PointCollection(new[]
-            {
-                backTop, backRight, Project(nMax, mMin, 1), Project(nMin, mMin, 1)
-            }),
-            Fill = wallBrush,
-            StrokeThickness = 0
-        };
-        PlotCanvas.Children.Add(wallM);
-        PlotCanvas.Children.Add(wallN);
-
-        // Деления лог-шкалы времени: 1–5 в каждой декаде, все кратны 5;
-        // при большом диапазоне оставляем только декады, чтобы подписи не слипались
-        double[] logTickCandidates = [0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000];
-        var zTicks = logTickCandidates
-            .Where(t => Math.Log10(t) >= zLogMin && Math.Log10(t) <= zLogMax)
-            .ToList();
-        if (zLogRange > 2.5)
-            zTicks = zTicks.Where(t =>
-            {
-                var mantissa = t / Math.Pow(10, Math.Floor(Math.Log10(t)));
-                return Math.Abs(mantissa - 1) < 1e-9;
-            }).ToList();
-        string FormatZTick(double t) => t < 1 ? t.ToString("0.##", CultureInfo.CurrentCulture) : FormatTick(t, 0);
-
-        // Сетки на стенках: вертикали по делениям и горизонтали по времени
-        for (var v = Math.Ceiling(mMin / mTickStep - 1e-9) * mTickStep; v <= mMax + mTickStep * 1e-6; v += mTickStep)
-            AddLine(Project(nMin, v, 0), Project(nMin, v, 1), GridBrush, 1);
-        for (var v = Math.Ceiling(nMin / nTickStep - 1e-9) * nTickStep; v <= nMax + nTickStep * 1e-6; v += nTickStep)
-            AddLine(Project(v, mMin, 0), Project(v, mMin, 1), GridBrush, 1);
-        foreach (var t in zTicks)
-        {
-            AddLine(Project(nMin, mMin, ZFrac(t)), Project(nMin, mMax, ZFrac(t)), GridBrush, 1);
-            AddLine(Project(nMin, mMin, ZFrac(t)), Project(nMax, mMin, ZFrac(t)), GridBrush, 1);
-        }
-
-        // Пол: линии по N и M на нулевой высоте
-        for (var v = (double)mMin; v <= mMax + mTickStep * 1e-6; v += mTickStep)
-            AddLine(Project(nMin, v, 0), Project(nMax, v, 0), GridBrush, 1);
-        for (var v = (double)nMin; v <= nMax + nTickStep * 1e-6; v += nTickStep)
-            AddLine(Project(v, mMin, 0), Project(v, mMax, 0), GridBrush, 1);
-
-        // Рёбра ящика
-        AddLine(backTop, backRight, AxisBrush, 1.4);
-        AddLine(backTop, backLeft, AxisBrush, 1.4);
-        AddLine(backLeft, front, AxisBrush, 1.2);
-        AddLine(backRight, front, AxisBrush, 1.2);
-        AddLine(backLeft, leftTop, AxisBrush, 1.4);
-        AddLine(backTop, Project(nMin, mMin, 1), AxisBrush, 1.2);
-        AddLine(backRight, Project(nMax, mMin, 1), AxisBrush, 1.2);
-        AddLine(leftTop, Project(nMin, mMin, 1), GridBrush, 1);
-        AddLine(Project(nMax, mMin, 1), Project(nMin, mMin, 1), GridBrush, 1);
-
-        // Деления N — по переднему левому ребру (m = mMax), M — по переднему правому (n = nMax)
-        for (var v = Math.Ceiling(nMin / nTickStep - 1e-9) * nTickStep; v <= nMax + nTickStep * 1e-6; v += nTickStep)
-        {
-            var p = Project(v, mMax, 0);
-            AddText(FormatTick(v, 0), p.X - 34, p.Y + 7, 68, TickBrush, TextAlignment.Center, fontSize: 13);
-        }
-        for (var v = Math.Ceiling(mMin / mTickStep - 1e-9) * mTickStep; v <= mMax + mTickStep * 1e-6; v += mTickStep)
-        {
-            var p = Project(nMax, v, 0);
-            AddText(FormatTick(v, 0), p.X + 12, p.Y + 7, 56, TickBrush, TextAlignment.Left, fontSize: 13);
-        }
-
-        // Ось времени — вертикаль на левой вершине ромба
-        foreach (var t in zTicks)
-        {
-            var p = Project(nMin, mMax, ZFrac(t));
-            AddText(FormatZTick(t), p.X - 74, p.Y - 9, 66, TickBrush, TextAlignment.Right, fontSize: 13);
-        }
-        var midN = Project((nMin + nMax) / 2.0, mMax, 0);
-        var midM = Project(nMax, (mMin + mMax) / 2.0, 0);
-        AddText("N", midN.X - 66, midN.Y + 28, 60, TickBrush, TextAlignment.Right, fontSize: 13);
-        AddText("M", midM.X + 8, midM.Y + 28, 60, TickBrush, fontSize: 13);
-        AddText("мс, лог", leftTop.X - 74, leftTop.Y - 28, 80, TextBrush, TextAlignment.Right, fontSize: 12);
-        AddText("Поверхность времени · N × M", 4, 5, 260, TextBrush, fontSize: 12);
-
-        // Поверхность: квадраты сортируются по глубине (i + j по возрастанию — дальние раньше),
-        // иначе соседние ячейки перекрываются в неверном порядке и сетка «ведёт»
-        var lookup = new Dictionary<(int, int), double>();
-        foreach (var cell in _grid3d)
-            lookup[(cell.N, cell.M)] = cell.Value;
-
-        double Z(int n, int m) => lookup.TryGetValue((n, m), out var v) ? v : 0;
-        var quads = new List<(int Depth, Polygon Polygon)>();
-        for (var i = 0; i < ns.Count - 1; i++)
-        {
-            for (var j = 0; j < ms.Count - 1; j++)
-            {
-                var n0 = ns[i];
-                var n1 = ns[i + 1];
-                var m0 = ms[j];
-                var m1 = ms[j + 1];
-                var quad = new[]
-                {
-                    Project(n0, m0, ZFrac(Z(n0, m0))),
-                    Project(n1, m0, ZFrac(Z(n1, m0))),
-                    Project(n1, m1, ZFrac(Z(n1, m1))),
-                    Project(n0, m1, ZFrac(Z(n0, m1)))
-                };
-                var t = ZFrac(Z(n1, m1));
-                var polygon = new Polygon
-                {
-                    Points = new PointCollection(quad),
-                    Fill = new SolidColorBrush(LerpColor(SurfaceLow.Color, SurfaceHigh.Color, t)),
-                    Stroke = new SolidColorBrush(Color.FromRgb(11, 16, 32)),
-                    StrokeThickness = 0.7
-                };
-                polygon.ToolTip = $"N = {n0}–{n1}, M = {m0}–{m1}{Environment.NewLine}Время (мин из {_currentRuns}): {Z(n1, m1):0.####} мс";
-                Panel.SetZIndex(polygon, 1);
-                quads.Add((i + j, polygon));
-            }
-        }
-        foreach (var (_, polygon) in quads.OrderBy(q => q.Depth))
-            PlotCanvas.Children.Add(polygon);
-
-        // Кривые сравнения: матричные — по диагонали M = N, остальные — по переднему срезу
-        // M = M_max (их время от M не зависит), чтобы подъём кривой был хорошо виден
-        foreach (var series in _comparison)
-        {
-            var onDiagonal = series.Algorithm.SupportsMatrixDimensions;
-            double CurveM(double n) => onDiagonal ? n : mMax;
-            var diagPoints = series.Points
-                .Where(p => p.N >= nMin && p.N <= nMax)
-                .Select(p => Project(p.N, CurveM(p.N), ZFrac(p.Value)))
-                .ToList();
-            if (diagPoints.Count > 1)
-                AddPolyline(diagPoints, series.Brush, 2.6);
-
-            foreach (var point in series.Points)
-            {
-                if (point.N < nMin || point.N > nMax)
-                    continue;
-                var position = Project(point.N, CurveM(point.N), ZFrac(point.Value));
-                var dot = new Ellipse
-                {
-                    Width = 6,
-                    Height = 6,
-                    Fill = series.Brush,
-                    Stroke = new SolidColorBrush(Color.FromRgb(11, 16, 32)),
-                    StrokeThickness = 1,
-                    ToolTip = $"{series.Algorithm.Name}{Environment.NewLine}N = {point.N:N0}{(onDiagonal ? ", M = N" : string.Empty)}{Environment.NewLine}{point.Value:0.####} мс"
-                };
-                Canvas.SetLeft(dot, position.X - 3);
-                Canvas.SetTop(dot, position.Y - 3);
-                Panel.SetZIndex(dot, 4);
-                PlotCanvas.Children.Add(dot);
-            }
-        }
-    }
-
-    private static Color LerpColor(Color from, Color to, double t)
-    {
-        t = Math.Clamp(t, 0, 1);
-        return Color.FromRgb(
-            (byte)(from.R + (to.R - from.R) * t),
-            (byte)(from.G + (to.G - from.G) * t),
-            (byte)(from.B + (to.B - from.B) * t));
-    }
 
     private void DrawEmptyChartFrame()
     {
         if (PlotCanvas.ActualWidth < 150 || PlotCanvas.ActualHeight < 130)
             return;
+        PlotViewport.Visibility = Visibility.Collapsed;
         if (Is3DMode)
         {
             // Пустой 3D-каркас: подсказка, что для матриц рисуется поверхность
@@ -1302,6 +1073,35 @@ public partial class MainWindow : Window
         AddText(_usesSteps ? "Количество операций" : "Время выполнения · мс", 4, 5, 220, TextBrush, fontSize: 12);
         AddText("Размер входных данных · N", width - right - 190, height - 24, 190, TextBrush, TextAlignment.Right, fontSize: 12);
     }
+
+    // ---------- Тултипы 3D-сцены ----------
+
+    private void PlotViewport_MouseMove(object sender, MouseEventArgs e)
+    {
+        string? tip = null;
+        var hitParams = new PointHitTestParameters(e.GetPosition(PlotViewport));
+        VisualTreeHelper.HitTest(PlotViewport, null, result =>
+        {
+            if (result is RayHitTestResult rayHit
+                && rayHit.VisualHit is ModelVisual3D model
+                && ToolTipService.GetToolTip(model) is string text)
+            {
+                tip = text;
+                return HitTestResultBehavior.Stop;
+            }
+            return HitTestResultBehavior.Continue;
+        }, hitParams);
+
+        if (tip is null)
+        {
+            SurfaceTip.IsOpen = false;
+            return;
+        }
+        SurfaceTipText.Text = tip;
+        SurfaceTip.IsOpen = true;
+    }
+
+    private void PlotViewport_MouseLeave(object sender, MouseEventArgs e) => SurfaceTip.IsOpen = false;
 
     private void AddPolyline(IEnumerable<Point> points, Brush brush, double thickness, bool dashed = false, double opacity = 1)
     {
