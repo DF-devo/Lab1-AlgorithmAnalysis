@@ -339,7 +339,7 @@ public partial class MainWindow : Window
             var progressB = MakeProgress(0.6 + share * i, share, other);
             // Кривая сравнения идёт по диагонали (N, N) — общий срез с поверхностью
             var (pointsB, resultsB, cachedB) = await Task.Run(
-                () => RunSeries2DAsync(other, otherEntity, MakeSizes(fitN, fitStep), runs, DataType.Random, useCache, token, progressB), token);
+                () => RunSeries2DAsync(other, otherEntity, MakeSizes(fitN, fitStep, minN: 16), runs, DataType.Random, useCache, token, progressB), token);
             totalCached += cachedB;
             _comparison.Add(new ComparisonSeries
             {
@@ -499,7 +499,7 @@ public partial class MainWindow : Window
         var cachedCells = 0;
         var random = new Random(7411);
         var db = UiDatabase.CreateDatabaseService();
-        var sizes = MakeSizes(nMax, step);
+        var sizes = MakeSizes(nMax, step, minN: 16);
         var total = sizes.Count * sizes.Count;
         var done = 0;
 
@@ -653,13 +653,13 @@ public partial class MainWindow : Window
         (StringGenerator.GenerateRandomString(n, random), StringGenerator.GenerateRandomString(n, random));
 
     /// <summary>
-    /// Размеры входных данных: первая точка — N = 1, далее ровный шаг (1, 1+шаг, 1+2·шаг, …),
+    /// Размеры входных данных: первая точка — N = minN (по умолчанию 1), далее ровный шаг,
     /// без «хвостовой» точки, ломающей равномерность.
     /// </summary>
-    private static List<int> MakeSizes(int maxN, int step)
+    private static List<int> MakeSizes(int maxN, int step, int minN = 1)
     {
         var sizes = new List<int>();
-        for (var n = 1; n <= maxN; n += step)
+        for (var n = minN; n <= maxN; n += step)
             sizes.Add(n);
         if (sizes.Count == 0)
             sizes.Add(maxN);
@@ -787,7 +787,7 @@ public partial class MainWindow : Window
         double Estimate(int n, int st)
         {
             double sum = 0;
-            var sizes = MakeSizes(n, st);
+            var sizes = MakeSizes(n, st, minN: 16);
             foreach (var nn in sizes)
                 foreach (var mm in sizes)
                     sum += Basis(nn, mm);
@@ -1060,7 +1060,10 @@ public partial class MainWindow : Window
         var zRawMax = Math.Max(_grid3d.Max(p => p.Value), curvesMax);
         var zRawMin = Math.Min(_grid3d.Min(p => p.Value), curvesMin);
         var zLogMax = Math.Log10(Math.Max(zRawMax, 1e-3));
-        var zLogMin = Math.Log10(Math.Max(zRawMin * 0.5, 1e-4));
+        // Диапазон ограничен ~3,2 декады: иначе вырожденно мелкие ячейки (N = 1…) растягивают
+        // шкалу и рвут поверхность; ячейки ниже низа шкалы рисуются на полу, тултип показывает
+        // их реальное время
+        var zLogMin = Math.Max(Math.Log10(Math.Max(zRawMin * 0.5, 1e-4)), zLogMax - 3.2);
         if (zLogMax - zLogMin < 0.6)
             zLogMax = zLogMin + 0.6;
         var zLogRange = zLogMax - zLogMin;
