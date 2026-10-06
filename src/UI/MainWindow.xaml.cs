@@ -1154,7 +1154,9 @@ public partial class MainWindow : Window
         var hasSeries = _grid3d.Count > 0 ? _currentRunResults.Count > 0 : _points.Count > 0 && _currentRunResults.Count > 0;
         if (!hasSeries)
         {
-            StatusText.Text = "Нет результатов для сохранения — сначала постройте график.";
+            StatusText.Text = _points.Count > 0 || _grid3d.Count > 0
+                ? "Все точки серии уже в кэше БД — сохранять нечего."
+                : "Нет результатов для сохранения — сначала постройте график.";
             return;
         }
 
