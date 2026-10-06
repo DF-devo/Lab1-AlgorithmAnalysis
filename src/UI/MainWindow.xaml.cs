@@ -126,7 +126,7 @@ public partial class MainWindow : Window
             SumElements or ProductElements or PolynomialHorner => ("2000000", "100000", "3"),
             ConstantFunction => ("1000000", "50000", "3"),
             PolynomialNaive => ("8000", "400", "3"),
-            MatrixMultiplication or StrassenMultiplication => ("250", "25", "1"),
+            MatrixMultiplication or StrassenMultiplication => ("250", "25", "2"),
             PowerIterative => ("3000000", "150000", "3"),
             PowerRecursive => ("5000", "250", "3"),
             PowerBinary => ("200000", "10000", "3"),
@@ -521,7 +521,8 @@ public partial class MainWindow : Window
                     {
                         var taken = rows.OrderBy(r => r.RunNumber).Take(runs).ToList();
                         cachedCells++;
-                        grid.Add(new GridPoint(n, m, taken.Average(r => r.TimeMs), FromCache: true));
+                        // минимум по запускам — устойчивая к GC-всплескам оценка времени ячейки
+                        grid.Add(new GridPoint(n, m, taken.Min(r => r.TimeMs), FromCache: true));
                         done++;
                         progress.Report((done, total, n));
                         continue;
@@ -560,7 +561,7 @@ public partial class MainWindow : Window
                     await db.SaveExperimentAsync(experiment, fresh);
                 }
 
-                grid.Add(new GridPoint(n, m, fresh.Average(r => r.TimeMs)));
+                grid.Add(new GridPoint(n, m, fresh.Min(r => r.TimeMs)));
                 done++;
                 progress.Report((done, total, n));
             }
@@ -1037,24 +1038,29 @@ public partial class MainWindow : Window
         var mMax = ms[^1];
         var nRange = Math.Max(1, nMax - nMin);
         var mRange = Math.Max(1, mMax - mMin);
-        var zRaw = _grid3d.Max(p => p.Value);
+        // Шкала времени — с учётом и поверхности, и кривых сравнения, иначе они улетают за поле
+        var curvesMax = _comparison.Count == 0
+            ? 0
+            : _comparison.Max(c => c.Points.Count == 0 ? 0 : c.Points.Where(p => p.N >= nMin && p.N <= nMax).Max(p => p.Value));
+        var zRaw = Math.Max(_grid3d.Max(p => p.Value), curvesMax);
         var (zMax, zStep, zDecimals) = NiceScale(zRaw <= 0 ? 1 : zRaw, divisions: 5);
 
-        // Изометрия: ось N — вправо-вниз, ось M — влево-вниз, время — вверх
-        var scaleFit = Math.Min(plotW / 0.96, plotH / 0.9);
-        var sx = scaleFit * 0.58;
-        var sy = scaleFit * 0.32;
-        var sz = Math.Max(plotH * 0.25, plotH - (sx + sy) * 0.5);
+        // Изометрия: ось N — вправо-вниз, ось M — влево-вниз, время — вверх.
+        // Ракурс приплюснут (0.94/0.42), чтобы широкий холст заполнялся лучше
+        var s = Math.Min(plotW * 0.95 / 0.94, plotH * 0.55 / 0.42);
+        var sx = s * 0.62;
+        var sy = s * 0.38;
+        var sz = Math.Max(plotH * 0.35, plotH - 0.42 * s);
         Point Origin;
         {
-            var ox = left + sy * 0.866 + 8;
-            var oy = top + 6;
+            var ox = left + (plotW - 0.94 * s) / 2 + 0.94 * sy;
+            var oy = top + 30;
             Origin = new Point(ox, oy);
         }
 
         Point Project(double n, double m, double z) => new(
-            Origin.X + (n - nMin) / nRange * sx * 0.866 - (m - mMin) / mRange * sy * 0.866,
-            Origin.Y + (n - nMin) / nRange * sx * 0.5 + (m - mMin) / mRange * sy * 0.5 - z / zMax * sz);
+            Origin.X + (n - nMin) / nRange * sx * 0.94 - (m - mMin) / mRange * sy * 0.94,
+            Origin.Y + (n - nMin) / nRange * sx * 0.42 + (m - mMin) / mRange * sy * 0.42 - z / zMax * sz);
 
         // Пол сетки: линии по N и M на нулевой высоте
         var (niceN, nTickStep, _) = NiceScale(nMax, divisions: 4);
@@ -1090,12 +1096,14 @@ public partial class MainWindow : Window
         AddText("мс", Project(nMin, mMin, zMax).X - 78, Project(nMin, mMin, zMax).Y - 30, 60, TextBrush, fontSize: 12);
         AddText("Поверхность времени · N × M", 4, 5, 260, TextBrush, fontSize: 12);
 
-        // Поверхность: квадраты от дальнего угла к ближнему, цвет по высоте
+        // Поверхность: квадраты сортируются по глубине (i + j по возрастанию — дальние раньше),
+        // иначе соседние ячейки перекрываются в неверном порядке и сетка «ведёт»
         var lookup = new Dictionary<(int, int), double>();
         foreach (var cell in _grid3d)
             lookup[(cell.N, cell.M)] = cell.Value;
 
         double Z(int n, int m) => lookup.TryGetValue((n, m), out var v) ? v : 0;
+        var quads = new List<(int Depth, Polygon Polygon)>();
         for (var i = 0; i < ns.Count - 1; i++)
         {
             for (var j = 0; j < ms.Count - 1; j++)
@@ -1111,7 +1119,7 @@ public partial class MainWindow : Window
                     Project(n1, m1, Z(n1, m1)),
                     Project(n0, m1, Z(n0, m1))
                 };
-                var t = Math.Clamp(Z((n0 + n1) / 2, (m0 + m1) / 2) / zMax, 0, 1);
+                var t = Math.Clamp(Z(n1, m1) / zMax, 0, 1);
                 var polygon = new Polygon
                 {
                     Points = new PointCollection(quad),
@@ -1119,11 +1127,13 @@ public partial class MainWindow : Window
                     Stroke = new SolidColorBrush(Color.FromRgb(11, 16, 32)),
                     StrokeThickness = 0.7
                 };
-                polygon.ToolTip = $"N = {n0}–{n1}, M = {m0}–{m1}{Environment.NewLine}Время: {Z(n1, m1):0.####} мс";
+                polygon.ToolTip = $"N = {n0}–{n1}, M = {m0}–{m1}{Environment.NewLine}Время (мин из {_currentRuns}): {Z(n1, m1):0.####} мс";
                 Panel.SetZIndex(polygon, 1);
-                PlotCanvas.Children.Add(polygon);
+                quads.Add((i + j, polygon));
             }
         }
+        foreach (var (_, polygon) in quads.OrderBy(q => q.Depth))
+            PlotCanvas.Children.Add(polygon);
 
         // Кривые сравнения — по диагонали M = N
         foreach (var series in _comparison)
