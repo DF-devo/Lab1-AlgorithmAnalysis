@@ -628,9 +628,11 @@ public partial class MainWindow : Window
 
     private static AlgorithmInput CreateInput(IAlgorithm algorithm, int n, int? m, DataType dataType, Random random)
     {
+        // Степенные алгоритмы используют только N — генерировать массив данных не нужно
         object data = algorithm switch
         {
-            MatrixMultiplication or StrassenMultiplication => Array.Empty<double>(),
+            MatrixMultiplication or StrassenMultiplication or PowerIterative or PowerRecursive or PowerBinary
+                or ConstantFunction => Array.Empty<double>(),
             RabinKarpAlgorithm or BoyerMooreAlgorithm => CreateSearchInput(n, random),
             LevenshteinAlgorithm => CreateLevenshteinInput(n, random),
             _ => VectorGenerator.GenerateForDataType(n, dataType)
