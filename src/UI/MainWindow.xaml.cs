@@ -126,7 +126,7 @@ public partial class MainWindow : Window
             SumElements or ProductElements or PolynomialHorner => ("2000000", "100000", "3"),
             ConstantFunction => ("1000000", "50000", "3"),
             PolynomialNaive => ("8000", "400", "3"),
-            MatrixMultiplication or StrassenMultiplication => ("250", "25", "2"),
+            MatrixMultiplication or StrassenMultiplication => ("512", "48", "1"),
             PowerIterative => ("3000000", "150000", "3"),
             PowerRecursive => ("5000", "250", "3"),
             PowerBinary => ("200000", "10000", "3"),
@@ -309,14 +309,9 @@ public partial class MainWindow : Window
         IAlgorithm algorithm, int maxN, int step, int runs,
         List<IAlgorithm> comparisons, bool useCache, CancellationToken token)
     {
-        // Для сравнения диагональ меряется по тем же N, поэтому масштаб — минимум по всем
+        // Масштаб подбираем по поверхности; кривые сравнения выполняются на тех же N
+        // и добавляют своё время поверх серии
         var (fitN, fitStep, adjusted) = AutoFitSeries3D(algorithm, maxN, step, runs);
-        foreach (var other in comparisons)
-        {
-            var (otherN, otherStep, _) = AutoFitSeries(other, fitN, fitStep, runs, DataType.Random);
-            if (otherN < fitN)
-                (fitN, fitStep) = (otherN, otherStep);
-        }
         ApplyFittedScale(fitN, fitStep, adjusted);
 
         var entity = await UiDatabase.ResolveAlgorithmAsync(algorithm);
@@ -517,24 +512,41 @@ public partial class MainWindow : Window
                 if (useCache)
                 {
                     var rows = await db.GetCachedResultsAsync(entity.Id, n, DataType.Random, m);
-                    if (rows.Count >= runs)
+                    if (rows.Count > 0)
                     {
-                        var taken = rows.OrderBy(r => r.RunNumber).Take(runs).ToList();
                         cachedCells++;
-                        // минимум по запускам — устойчивая к GC-всплескам оценка времени ячейки
-                        grid.Add(new GridPoint(n, m, taken.Min(r => r.TimeMs), FromCache: true));
+                        // из кэша берём минимум по всем сохранённым прогонам ячейки
+                        grid.Add(new GridPoint(n, m, rows.Min(r => r.TimeMs), FromCache: true));
                         done++;
                         progress.Report((done, total, n));
                         continue;
                     }
                 }
 
-                var fresh = new List<ExperimentResult>(runs);
-                for (var run = 0; run < runs; run++)
+                var fresh = new List<ExperimentResult>();
+                var input = CreateInput(algorithm, n, m, DataType.Random, random);
+                var first = algorithm.Execute(input);
+                var best = first.TimeMs;
+                fresh.Add(new ExperimentResult
+                {
+                    N = n,
+                    M = m,
+                    RunNumber = 1,
+                    TimeMs = first.TimeMs,
+                    Steps = first.Steps
+                });
+
+                // Адаптивные прогоны: быструю ячейку измеряем десятки раз, чтобы минимум
+                // был устойчив к шуму планировщика и GC (иначе край поверхности «рвётся»)
+                var extraRuns = first.TimeMs < 20
+                    ? Math.Clamp((int)Math.Ceiling(20.0 / Math.Max(0.05, first.TimeMs)), 2, 24)
+                    : 1;
+                extraRuns = Math.Max(extraRuns, runs);
+                for (var run = 1; run < extraRuns; run++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var input = CreateInput(algorithm, n, m, DataType.Random, random);
-                    var measurement = algorithm.Execute(input);
+                    var measurement = algorithm.Execute(CreateInput(algorithm, n, m, DataType.Random, random));
+                    best = Math.Min(best, measurement.TimeMs);
                     fresh.Add(new ExperimentResult
                     {
                         N = n,
@@ -555,13 +567,13 @@ public partial class MainWindow : Window
                         Date = DateTime.UtcNow,
                         N_max = n,
                         Step = n,
-                        RunsCount = runs,
+                        RunsCount = fresh.Count,
                         DataType = DataType.Random
                     };
                     await db.SaveExperimentAsync(experiment, fresh);
                 }
 
-                grid.Add(new GridPoint(n, m, fresh.Min(r => r.TimeMs)));
+                grid.Add(new GridPoint(n, m, best));
                 done++;
                 progress.Report((done, total, n));
             }
@@ -681,8 +693,8 @@ public partial class MainWindow : Window
     private (int NMax, int Step, bool Adjusted) AutoFitSeries(
         IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType)
     {
-        const double targetMinMs = 4500;
-        const double targetMaxMs = 8000;
+        const double targetMinMs = 5000;
+        const double targetMaxMs = 10000;
         var cap = GetMaximumAllowedN(algorithm);
 
         int pilot = Math.Min(PilotSize(algorithm), cap);
@@ -751,8 +763,8 @@ public partial class MainWindow : Window
     /// <summary>Автоподбор для 3D-сетки матричного алгоритма: база стоимости N²·M (или N^2.81 у Штрассена).</summary>
     private (int NMax, int Step, bool Adjusted) AutoFitSeries3D(IAlgorithm algorithm, int maxN, int step, int runs)
     {
-        const double targetMinMs = 4500;
-        const double targetMaxMs = 8000;
+        const double targetMinMs = 6000;
+        const double targetMaxMs = 12000;
         var cap = GetMaximumAllowedN(algorithm);
 
         int pilot = Math.Min(128, cap);
