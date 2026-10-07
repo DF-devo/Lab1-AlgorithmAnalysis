@@ -61,6 +61,8 @@ public partial class MainWindow : Window
     // Дополнительные серии для режима сравнения (2+ алгоритмов на одном поле)
     private readonly List<ComparisonSeries> _comparison = [];
     private List<IAlgorithm> _compareSelection = [];
+    private bool _paramsDirty;                                // пользователь вручную менял N/шаг/запуски
+    private bool _suppressParamsDirty = true;                 // пока окно строится, записи в поля не считаются правкой
 
     // 3D-режим для матричных алгоритмов: поверхность время(N, M)
     private List<GridPoint> _grid3d = [];
@@ -80,6 +82,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        FitToScreen();
         AlgorithmCombo.ItemsSource = _algorithms;
         AlgorithmCombo.SelectedItem = _algorithms[1];
         QueueList.ItemsSource = _queueItems;
@@ -107,6 +110,20 @@ public partial class MainWindow : Window
         }
     }
 
+    // На экранах меньше дизайн-размера окно открывается развёрнутым, иначе — по центру;
+    // позицию задаём вручную: CenterScreen ошибается при масштабе DPI выше 100%
+    private void FitToScreen()
+    {
+        var work = SystemParameters.WorkArea;
+        if (work.Width < Width || work.Height < Height)
+        {
+            WindowState = WindowState.Maximized;
+            return;
+        }
+        Left = work.Left + (work.Width - Width) / 2;
+        Top = work.Top + (work.Height - Height) / 2;
+    }
+
     private IAlgorithm? SelectedAlgorithm => AlgorithmCombo.SelectedItem as IAlgorithm;
     private bool Is3DMode => SelectedAlgorithm?.SupportsMatrixDimensions == true;
 
@@ -120,22 +137,34 @@ public partial class MainWindow : Window
         AlgorithmDescription.Text = algorithm.Description;
         var limit = GetMaximumAllowedN(algorithm);
 
-        // Показательные вводные: достаточно большие, чтобы эксперимент шёл секунды
-        (MaxNBox.Text, StepBox.Text, RunsBox.Text) = algorithm switch
+        // Показательные вводные: достаточно большие, чтобы эксперимент шёл секунды.
+        // Не перезаписываем поля, если пользователь уже ввёл свои значения
+        if (!_paramsDirty)
         {
-            BubbleSort => ("12000", "600", "3"),
-            QuickSort or Timsort => ("400000", "20000", "3"),
-            SumElements or ProductElements or PolynomialHorner => ("2000000", "100000", "3"),
-            ConstantFunction => ("1000000", "50000", "3"),
-            PolynomialNaive => ("8000", "400", "3"),
-            MatrixMultiplication or StrassenMultiplication => ("512", "48", "1"),
-            PowerIterative => ("3000000", "150000", "3"),
-            PowerRecursive => ("5000", "250", "3"),
-            PowerBinary => ("200000", "10000", "3"),
-            RabinKarpAlgorithm or BoyerMooreAlgorithm => ("2000000", "100000", "3"),
-            LevenshteinAlgorithm => ("4000", "200", "3"),
-            _ => ("100000", "5000", "3")
-        };
+            _suppressParamsDirty = true;
+            try
+            {
+                (MaxNBox.Text, StepBox.Text, RunsBox.Text) = algorithm switch
+                {
+                    BubbleSort => ("12000", "600", "3"),
+                    QuickSort or Timsort => ("400000", "20000", "3"),
+                    SumElements or ProductElements or PolynomialHorner => ("2000000", "100000", "3"),
+                    ConstantFunction => ("1000000", "50000", "3"),
+                    PolynomialNaive => ("8000", "400", "3"),
+                    MatrixMultiplication or StrassenMultiplication => ("512", "48", "1"),
+                    PowerIterative => ("3000000", "150000", "3"),
+                    PowerRecursive => ("5000", "250", "3"),
+                    PowerBinary => ("200000", "10000", "3"),
+                    RabinKarpAlgorithm or BoyerMooreAlgorithm => ("2000000", "100000", "3"),
+                    LevenshteinAlgorithm => ("4000", "200", "3"),
+                    _ => ("100000", "5000", "3")
+                };
+            }
+            finally
+            {
+                _suppressParamsDirty = false;
+            }
+        }
 
         DataTypeCombo.IsEnabled = algorithm.SupportsDataType;
         ChartSubtitle.Text = algorithm.SupportsMatrixDimensions
@@ -173,24 +202,9 @@ public partial class MainWindow : Window
         }
 
         // Сравнение: отобранные алгоритмы, совместимые с основным по типу замера
-        var comparisons = new List<IAlgorithm>();
-        if (CompareCheck.IsChecked == true)
-        {
-            comparisons = _compareSelection
-                .Where(a => a.Name != algorithm.Name)
-                .Where(a => a.SupportsStepCounting == algorithm.SupportsStepCounting)
-                .ToList();
-            var skipped = _compareSelection.Count - comparisons.Count;
-            if (_compareSelection.Count > 0 && comparisons.Count == 0)
-            {
-                StatusText.Text = "Выбранные для сравнения алгоритмы несовместимы с основным по типу замера (время/шаги).";
-                return;
-            }
-            if (skipped > 0)
-            {
-                StatusText.Text = $"Несовместимые по типу замера алгоритмы пропущены ({skipped}).";
-            }
-        }
+        var comparisons = CollectCompatibleComparisons(algorithm);
+        if (comparisons is null)
+            return;
 
         var useCache = UseCacheCheck.IsChecked == true;
         _points.Clear();
@@ -244,14 +258,20 @@ public partial class MainWindow : Window
         IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType,
         List<IAlgorithm> comparisons, bool useCache, CancellationToken token)
     {
-        var (fitN, fitStep, adjusted) = AutoFitSeries(algorithm, maxN, step, runs, dataType);
+        var autoFit = AutoFitCheck.IsChecked == true;
+        var (fitN, fitStep, adjusted) = autoFit
+            ? AutoFitSeries(algorithm, maxN, step, runs, dataType)
+            : (maxN, step, false);
 
         // При сравнении берём минимум по всем подборам, чтобы тяжёлый алгоритм не растянул серию
-        foreach (var other in comparisons)
+        if (autoFit)
         {
-            var (otherN, otherStep, _) = AutoFitSeries(other, fitN, fitStep, runs, dataType);
-            if (otherN < fitN)
-                (fitN, fitStep) = (otherN, otherStep);
+            foreach (var other in comparisons)
+            {
+                var (otherN, otherStep, _) = AutoFitSeries(other, fitN, fitStep, runs, dataType);
+                if (otherN < fitN)
+                    (fitN, fitStep) = (otherN, otherStep);
+            }
         }
         ApplyFittedScale(fitN, fitStep, adjusted);
 
@@ -313,7 +333,9 @@ public partial class MainWindow : Window
     {
         // Масштаб подбираем по поверхности; кривые сравнения выполняются на тех же N
         // и добавляют своё время поверх серии
-        var (fitN, fitStep, adjusted) = AutoFitSeries3D(algorithm, maxN, step, runs);
+        var (fitN, fitStep, adjusted) = AutoFitCheck.IsChecked == true
+            ? AutoFitSeries3D(algorithm, maxN, step, runs)
+            : (maxN, step, false);
         ApplyFittedScale(fitN, fitStep, adjusted);
 
         var entity = await UiDatabase.ResolveAlgorithmAsync(algorithm);
@@ -368,9 +390,26 @@ public partial class MainWindow : Window
     {
         if (adjusted || fitN.ToString(CultureInfo.CurrentCulture) != MaxNBox.Text)
         {
-            MaxNBox.Text = fitN.ToString(CultureInfo.CurrentCulture);
-            StepBox.Text = fitStep.ToString(CultureInfo.CurrentCulture);
+            _suppressParamsDirty = true;
+            try
+            {
+                MaxNBox.Text = fitN.ToString(CultureInfo.CurrentCulture);
+                StepBox.Text = fitStep.ToString(CultureInfo.CurrentCulture);
+            }
+            finally
+            {
+                _suppressParamsDirty = false;
+            }
+            // Значения в полях теперь подобраны программой — пользовательский ввод больше не актуален
+            _paramsDirty = false;
         }
+    }
+
+    private void ParamsBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressParamsDirty)
+            return;
+        _paramsDirty = true;
     }
 
     private string BuildDoneStatus(int points, int cached, int runs, int comparisons) =>
@@ -923,15 +962,17 @@ public partial class MainWindow : Window
     {
         if (_grid3d.Count > 0)
         {
-            // 3D: настоящий вьюпорт с Z-буфером и орбитальной камерой
-            PlotCanvas.Visibility = Visibility.Collapsed;
+            // 3D: настоящий вьюпорт с Z-буфером и орбитальной камерой.
+            // Hidden, а не Collapsed — иначе Canvas теряет размеры и 2D потом не восстанавливается
+            PlotCanvas.Visibility = Visibility.Hidden;
             EmptyState.Visibility = Visibility.Collapsed;
             PlotViewport.Visibility = Visibility.Visible;
             SurfaceChart3D.Render(SceneRoot, PlotViewport, _grid3d, _comparison, _currentRuns);
             return;
         }
 
-        PlotViewport.Visibility = Visibility.Collapsed;
+        PlotViewport.Visibility = Visibility.Hidden;
+        PlotCanvas.Visibility = Visibility.Visible;
         RedrawChart2D();
     }
 
@@ -1045,9 +1086,10 @@ public partial class MainWindow : Window
 
     private void DrawEmptyChartFrame()
     {
+        PlotViewport.Visibility = Visibility.Hidden;
+        PlotCanvas.Visibility = Visibility.Visible;
         if (PlotCanvas.ActualWidth < 150 || PlotCanvas.ActualHeight < 130)
             return;
-        PlotViewport.Visibility = Visibility.Collapsed;
         if (Is3DMode)
         {
             // Пустой 3D-каркас: подсказка, что для матриц рисуется поверхность
@@ -1323,10 +1365,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        _queueItems.Add(new QueueItem(algorithm, maxN, step, runs, dataType));
+        var comparisons = CollectCompatibleComparisons(algorithm);
+        if (comparisons is null)
+        {
+            QueueStatusText.Text = StatusText.Text;
+            return;
+        }
+
+        _queueItems.Add(new QueueItem(algorithm, maxN, step, runs, dataType, comparisons));
         UpdateQueueStatus();
         RunQueueButton.IsEnabled = !_queueRunning;
-        QueueStatusText.Text = $"В очереди: {_queueItems.Count}. Нажмите «Выполнить очередь».";
+        QueueStatusText.Text = $"В очереди: {_queueItems.Count}" +
+                               (comparisons.Count > 0 ? $" (сравнение: {comparisons.Count + 1} алгоритмов)" : string.Empty) +
+                               ". Нажмите «Выполнить очередь».";
     }
 
     private void RemoveQueueItem_Click(object sender, RoutedEventArgs e)
@@ -1373,9 +1424,13 @@ public partial class MainWindow : Window
     {
         ResetComparison();
         _grid3d.Clear();
-        _points = item.Points!;
-        _currentRunResults = item.RunResults!;
-        _approximation = item.Approximation!;
+        if (item.Grid3d is { Count: > 0 })
+            _grid3d.AddRange(item.Grid3d);
+        if (item.ComparisonResults is { Count: > 0 })
+            _comparison.AddRange(item.ComparisonResults);
+        _points = item.Points ?? [];
+        _currentRunResults = item.RunResults ?? [];
+        _approximation = item.Approximation ?? [];
         _usesSteps = item.Algorithm.SupportsStepCounting;
         _lastRunCount = item.Runs;
         _currentAlgorithmRef = item.Algorithm;
@@ -1425,9 +1480,13 @@ public partial class MainWindow : Window
 
                 try
                 {
-                    var (fitN, fitStep, _) = AutoFitSeries(item.Algorithm, item.MaxN, item.Step, item.Runs, item.DataType);
+                    var autoFit = AutoFitCheck.IsChecked == true;
+                    var (fitN, fitStep, _) = !autoFit
+                        ? (item.MaxN, item.Step, false)
+                        : item.Algorithm.SupportsMatrixDimensions
+                            ? AutoFitSeries3D(item.Algorithm, item.MaxN, item.Step, item.Runs)
+                            : AutoFitSeries(item.Algorithm, item.MaxN, item.Step, item.Runs, item.DataType);
                     var entity = await UiDatabase.ResolveAlgorithmAsync(item.Algorithm);
-                    var sizes = MakeSizes(fitN, fitStep);
 
                     var progress = new Progress<(int Completed, int Total, int CurrentN)>(p =>
                     {
@@ -1435,14 +1494,70 @@ public partial class MainWindow : Window
                         RunProgress.Value = (double)p.Completed / p.Total * 100;
                     });
 
-                    var (points, runResults, cached) = await Task.Run(
-                        () => RunSeries2DAsync(item.Algorithm, entity, sizes, item.Runs, item.DataType, useCache, token, progress),
-                        token);
+                    var comparisons = new List<ComparisonSeries>();
+                    List<ExperimentResult> runResults;
 
-                    item.Points = points;
-                    item.RunResults = runResults;
-                    item.CachedPoints = cached;
-                    item.Approximation = FitExpectedCurve(points, item.Algorithm.TheoreticalComplexity);
+                    if (item.Algorithm.SupportsMatrixDimensions)
+                    {
+                        // 3D-поверхность времени (N × M) + кривые сравнения по диагонали M = N
+                        var (grid, results3d, cached) = await Task.Run(
+                            () => RunSeries3DAsync(item.Algorithm, entity, fitN, fitStep, item.Runs, useCache, token, progress),
+                            token);
+                        item.Grid3d = grid;
+                        item.RunResults = results3d;
+                        runResults = results3d;
+                        item.CachedPoints = cached;
+
+                        for (var i = 0; i < item.Comparisons.Count; i++)
+                        {
+                            var other = item.Comparisons[i];
+                            var otherEntity = await UiDatabase.ResolveAlgorithmAsync(other);
+                            var (pointsB, resultsB, cachedB) = await Task.Run(
+                                () => RunSeries2DAsync(other, otherEntity, MakeSizes(fitN, fitStep, minN: 16), item.Runs, DataType.Random, useCache, token, progress),
+                                token);
+                            item.CachedPoints += cachedB;
+                            comparisons.Add(new ComparisonSeries
+                            {
+                                Algorithm = other,
+                                Brush = ComparisonPalette()[(i + 1) % ComparisonPalette().Length],
+                                Points = pointsB,
+                                Approximation = FitExpectedCurve(pointsB, other.TheoreticalComplexity),
+                                Results = resultsB
+                            });
+                        }
+                    }
+                    else
+                    {
+                        var sizes = MakeSizes(fitN, fitStep);
+                        var (points, results2d, cached) = await Task.Run(
+                            () => RunSeries2DAsync(item.Algorithm, entity, sizes, item.Runs, item.DataType, useCache, token, progress),
+                            token);
+                        item.Points = points;
+                        item.Approximation = FitExpectedCurve(points, item.Algorithm.TheoreticalComplexity);
+                        item.RunResults = results2d;
+                        item.CachedPoints = cached;
+                        runResults = results2d;
+
+                        for (var i = 0; i < item.Comparisons.Count; i++)
+                        {
+                            var other = item.Comparisons[i];
+                            var otherEntity = await UiDatabase.ResolveAlgorithmAsync(other);
+                            var (pointsB, resultsB, cachedB) = await Task.Run(
+                                () => RunSeries2DAsync(other, otherEntity, sizes, item.Runs, item.DataType, useCache, token, progress),
+                                token);
+                            item.CachedPoints += cachedB;
+                            comparisons.Add(new ComparisonSeries
+                            {
+                                Algorithm = other,
+                                Brush = ComparisonPalette()[(i + 1) % ComparisonPalette().Length],
+                                Points = pointsB,
+                                Approximation = FitExpectedCurve(pointsB, other.TheoreticalComplexity),
+                                Results = resultsB
+                            });
+                        }
+                    }
+
+                    item.ComparisonResults = comparisons;
                     item.Completed = true;
 
                     if (QueueSaveCheckBox.IsChecked == true)
@@ -1527,6 +1642,30 @@ public partial class MainWindow : Window
         _comparison.Clear();
         if (LegendPanel is not null)
             UpdateLegend();
+    }
+
+    /// <summary>
+    /// Отобранные для сравнения алгоритмы, совместимые с основным по типу замера.
+    /// Возвращает null, если все отмеченные несовместимы (сообщение уже показано в статусе).
+    /// </summary>
+    private List<IAlgorithm>? CollectCompatibleComparisons(IAlgorithm main)
+    {
+        if (CompareCheck.IsChecked != true)
+            return [];
+
+        var compatible = _compareSelection
+            .Where(a => a.Name != main.Name)
+            .Where(a => a.SupportsStepCounting == main.SupportsStepCounting)
+            .ToList();
+
+        if (_compareSelection.Count > 0 && compatible.Count == 0)
+        {
+            StatusText.Text = "Выбранные для сравнения алгоритмы несовместимы с основным по типу замера (время/шаги).";
+            return null;
+        }
+        if (_compareSelection.Count - compatible.Count > 0)
+            StatusText.Text = $"Несовместимые по типу замера алгоритмы пропущены ({_compareSelection.Count - compatible.Count}).";
+        return compatible;
     }
 
     private DataType GetSelectedDataType() => DataTypeCombo.SelectedIndex switch
@@ -1673,13 +1812,15 @@ public partial class MainWindow : Window
         private static readonly Brush DoneBrush = new SolidColorBrush(Color.FromRgb(105, 216, 194));
         private static readonly Brush ErrorBrush = new SolidColorBrush(Color.FromRgb(255, 143, 120));
 
-        public QueueItem(IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType)
+        public QueueItem(IAlgorithm algorithm, int maxN, int step, int runs, DataType dataType,
+            IReadOnlyList<IAlgorithm> comparisons)
         {
             Algorithm = algorithm;
             MaxN = maxN;
             Step = step;
             Runs = runs;
             DataType = dataType;
+            Comparisons = comparisons;
         }
 
         public IAlgorithm Algorithm { get; }
@@ -1687,9 +1828,14 @@ public partial class MainWindow : Window
         public int Step { get; }
         public int Runs { get; }
         public DataType DataType { get; }
+        public IReadOnlyList<IAlgorithm> Comparisons { get; }
+
+        public List<GridPoint>? Grid3d { get; set; }
+        public List<ComparisonSeries>? ComparisonResults { get; set; }
 
         public string ParamsSummary => $"N ≤ {MaxN:N0} · шаг {Step} · {Runs} зап.";
-        public string Title => $"{Algorithm.Name} · {ParamsSummary}";
+        public string Title => $"{Algorithm.Name} · {ParamsSummary}" +
+                               (Comparisons.Count > 0 ? $" · +{Comparisons.Count} к сравнению" : string.Empty);
 
         public List<PlotPoint>? Points { get; set; }
         public List<PlotPoint>? Approximation { get; set; }

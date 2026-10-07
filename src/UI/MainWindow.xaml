@@ -4,8 +4,8 @@
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         xmlns:h="clr-namespace:HelixToolkit.Wpf;assembly=HelixToolkit.Wpf"
         Title="Algorithm Lab · Анализ сложности"
-        Width="1440" Height="900" MinWidth="1120" MinHeight="720"
-        WindowStartupLocation="CenterScreen"
+        Width="1440" Height="900" MinWidth="980" MinHeight="620"
+        WindowStartupLocation="Manual"
         Background="#0B1020" Foreground="#E8ECF5"
         FontFamily="Segoe UI">
     <Window.Resources>
@@ -18,6 +18,7 @@
             <Setter Property="Foreground" Value="#8995AD" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Margin" Value="0,0,0,7" />
+            <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
         <Style x:Key="FieldBox" TargetType="TextBox">
             <Setter Property="Foreground" Value="#E8ECF5" />
@@ -218,7 +219,7 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" />
+                <ColumnDefinition Width="320" />
                 <ColumnDefinition Width="22" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
@@ -237,20 +238,24 @@
                         <TextBlock x:Name="AlgorithmDescription" Text="Выберите алгоритм" Foreground="#8995AD" FontSize="12" TextWrapping="Wrap" Margin="0,9,0,18" MinHeight="34" />
 
                         <TextBlock Text="МАКСИМАЛЬНЫЙ РАЗМЕР N" Style="{StaticResource FieldLabel}" />
-                        <TextBox x:Name="MaxNBox" Style="{StaticResource FieldBox}" Text="2000" />
-                        <TextBlock Text="Число элементов на последней точке графика" Foreground="#65718A" FontSize="11" Margin="0,6,0,15" />
+                        <TextBox x:Name="MaxNBox" Style="{StaticResource FieldBox}" Text="2000" TextChanged="ParamsBox_TextChanged" />
+                        <TextBlock Text="Число элементов на последней точке графика" Foreground="#65718A" FontSize="11" Margin="0,6,0,15" TextWrapping="Wrap" />
 
                         <Grid Margin="0,0,0,15">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0">
                                 <TextBlock Text="ШАГ" Style="{StaticResource FieldLabel}" />
-                                <TextBox x:Name="StepBox" Style="{StaticResource FieldBox}" Text="100" />
+                                <TextBox x:Name="StepBox" Style="{StaticResource FieldBox}" Text="100" TextChanged="ParamsBox_TextChanged" />
                             </StackPanel>
                             <StackPanel Grid.Column="2">
                                 <TextBlock Text="ЗАПУСКОВ" Style="{StaticResource FieldLabel}" />
-                                <TextBox x:Name="RunsBox" Style="{StaticResource FieldBox}" Text="3" />
+                                <TextBox x:Name="RunsBox" Style="{StaticResource FieldBox}" Text="3" TextChanged="ParamsBox_TextChanged" />
                             </StackPanel>
                         </Grid>
+
+                        <CheckBox x:Name="AutoFitCheck" IsChecked="True" Foreground="#8995AD" FontSize="11" Margin="0,0,0,12">
+                            <TextBlock Text="Автоподбор N под время серии (~5–10 с). Выключите, чтобы использовать свои N и шаг." TextWrapping="Wrap" />
+                        </CheckBox>
 
                         <TextBlock Text="ВХОДНЫЕ ДАННЫЕ" Style="{StaticResource FieldLabel}" />
                         <ComboBox x:Name="DataTypeCombo" Style="{StaticResource FieldCombo}" Margin="0,0,0,14" SelectedIndex="0">
@@ -259,9 +264,11 @@
                             <sys:String>В обратном порядке</sys:String>
                         </ComboBox>
 
-                        <CheckBox x:Name="CompareCheck" Content="Сравнение алгоритмов (2 и более на одном графике)"
+                        <CheckBox x:Name="CompareCheck"
                                   Foreground="#8995AD" FontSize="12" Margin="0,2,0,0"
-                                  Checked="CompareCheck_Changed" Unchecked="CompareCheck_Changed" />
+                                  Checked="CompareCheck_Changed" Unchecked="CompareCheck_Changed">
+                            <TextBlock Text="Сравнение алгоритмов (2 и более на одном графике)" TextWrapping="Wrap" />
+                        </CheckBox>
                         <Button x:Name="PickCompareButton" Content="Выбрать алгоритмы для сравнения"
                                 Click="PickCompareButton_Click" Height="34" Margin="0,9,0,0"
                                 Style="{StaticResource DarkButton}" Background="#18243A" FontSize="12"
@@ -276,11 +283,13 @@
                             <Button x:Name="LoadDbButton" Grid.Column="2" Content="Загрузить из БД" Click="LoadDbButton_Click" Height="36" Style="{StaticResource DarkButton}" Background="#202B42" FontSize="12" />
                         </Grid>
 
-                        <CheckBox x:Name="UseCacheCheck" Content="Кэш: подставлять прошлые результаты для тех же вводных"
-                                  IsChecked="True" Foreground="#8995AD" FontSize="11" Margin="0,10,0,0" />
+                        <CheckBox x:Name="UseCacheCheck"
+                                  IsChecked="True" Foreground="#8995AD" FontSize="11" Margin="0,10,0,0">
+                            <TextBlock Text="Кэш: подставлять прошлые результаты для тех же вводных" TextWrapping="Wrap" />
+                        </CheckBox>
 
                         <ProgressBar x:Name="RunProgress" Height="4" Margin="0,17,0,8" Minimum="0" Maximum="100" Value="0" Style="{StaticResource SlimProgress}" />
-                        <TextBlock x:Name="StatusText" Text="Готов к запуску" Foreground="#8995AD" FontSize="11" />
+                        <TextBlock x:Name="StatusText" Text="Готов к запуску" Foreground="#8995AD" FontSize="11" TextWrapping="Wrap" />
 
                         <Border Background="#0C1323" BorderBrush="#202B42" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,23,0,0">
                             <StackPanel>
@@ -300,7 +309,8 @@
                                 </Grid>
                                 <TextBlock Text="Серии запускаются по очереди; готовые можно открыть на графике" Foreground="#65718A" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0" />
 
-                                <Button x:Name="AddToQueueButton" Content="＋ Добавить текущие параметры" Click="AddToQueueButton_Click" Height="34" Margin="0,10,0,0" Style="{StaticResource DarkButton}" Background="#18243A" FontSize="12" />
+                                <Button x:Name="AddToQueueButton" Content="＋ Добавить текущие параметры" Click="AddToQueueButton_Click" Height="34" Margin="0,10,0,0" Style="{StaticResource DarkButton}" Background="#18243A" FontSize="12"
+                                        ToolTip="Добавляет в очередь основной алгоритм вместе с отмеченными для сравнения" />
 
                                 <ListBox x:Name="QueueList" MaxHeight="200" Margin="0,10,0,0" Background="Transparent" BorderThickness="0"
                                          Foreground="#E8ECF5" ScrollViewer.VerticalScrollBarVisibility="Auto"

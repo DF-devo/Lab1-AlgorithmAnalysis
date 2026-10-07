@@ -27,7 +27,9 @@ public partial class CompareSelectDialog : Window
         AlgorithmsList.ItemsSource = _rows;
         foreach (var row in _rows)
             row.PropertyChanged += (_, _) => UpdateCount();
-        HintText.Text = $"Основной алгоритм «{mainAlgorithmName}» рисуется всегда; отмеченные добавятся к нему.";
+        HintText.Text = $"Основной алгоритм «{mainAlgorithmName}» рисуется всегда; отмеченные добавятся к нему. " +
+                        "Все серии считаются на одних вводных — N, шаг и запуски задаются в панели слева " +
+                        "(при выключенном автоподборе используются именно они).";
         UpdateCount();
     }
 
@@ -59,6 +61,7 @@ public partial class CompareSelectDialog : Window
 
         public IAlgorithm Algorithm { get; }
         public Brush Brush { get; }
+        public string Name => Algorithm.Name;
         public string Details { get; }
 
         private bool _selected;

@@ -11,9 +11,18 @@ public partial class DbExperimentsDialog : Window
     public DbExperimentsDialog(IReadOnlyList<Experiment> experiments)
     {
         InitializeComponent();
+        FitToScreen();
         ExperimentsList.ItemsSource = experiments.Select(e => new Row(e)).ToList();
         ExperimentsList.SelectedIndex = 0;
         CountText.Text = $"Всего серий: {experiments.Count}";
+    }
+
+    // Диалог не должен превышать 90% рабочей области экрана
+    private void FitToScreen()
+    {
+        var work = SystemParameters.WorkArea;
+        Width = Math.Min(Width, work.Width * 0.9);
+        Height = Math.Min(Height, work.Height * 0.9);
     }
 
     private void OkButton_Click(object sender, RoutedEventArgs e)
